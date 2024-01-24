@@ -1,5 +1,5 @@
 import numpy as np
-from skyc_maker import Trajectory, write_skyc, XYZYaw, select_file, evaluate_pickle
+from skyc_utils.skyc_maker import Trajectory, write_skyc, XYZYaw, select_file, evaluate_pickle
 
 
 def fig8(t, x_start, y_start, x_max, y_max, z, yaw_max=0.0):
