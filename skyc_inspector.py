@@ -372,7 +372,7 @@ def animate(limits: Tuple[Tuple[float, float], Tuple[float, float], Tuple[float,
     for drone in drones:
         ax.add_collection3d(drone)
     anim = PausableAnimation(anim_data=anim_traj_eval, drones=drones, car=car, car_anim_data=car_anim_data,
-                             fig=fig, frames=anim_length, interval=anim_interval, repeat=True, ax=ax)
+                             fig=fig, frames=anim_length, interval=anim_interval, repeat=False, ax=ax)
     return anim.animation
 
 

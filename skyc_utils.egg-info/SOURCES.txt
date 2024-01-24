@@ -1,6 +1,0 @@
-setup.py
-skyc_utils.egg-info/PKG-INFO
-skyc_utils.egg-info/SOURCES.txt
-skyc_utils.egg-info/dependency_links.txt
-skyc_utils.egg-info/requires.txt
-skyc_utils.egg-info/top_level.txt

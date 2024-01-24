@@ -1,3 +1,4 @@
 *.skyc
 .idea/
 venv/
+*.egg-info/

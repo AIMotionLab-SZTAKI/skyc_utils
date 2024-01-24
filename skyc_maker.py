@@ -239,6 +239,10 @@ def cleanup(files: List[str], folders: List[str]):
             print(f"Deleted {folder} folder")
 
 
+def is_num(var):
+    return isinstance(var, float) or isinstance(var, int)
+
+
 def write_skyc(trajectories: List[Trajectory], name=sys.argv[0][:-3]):
     """
     Constructs a skyc file from the provided trajectory, with the given name.
@@ -265,6 +269,8 @@ def write_skyc(trajectories: List[Trajectory], name=sys.argv[0][:-3]):
             "name": f"drone_{index}",
         }
         if parameters is not None:
+            for parameter in parameters:
+                assert is_num(parameter[0]) and isinstance(parameter[1], str) and is_num(parameter[2])
             drone_settings["parameters"] = parameters
         drones.append({
             "type": "generic",
@@ -377,8 +383,8 @@ def evaluate_pickle(pickle_name: str, *, x_offset=0.0, y_offset=0.0, z_offset=0.
     """
     with open(pickle_name, "rb") as file:
         data = pickle.load(file)
-        parameters = data.get("parameters", None)
-        segments = data["traj"]
+        parameters = data.get("parameters", None)  #maybe parameters = data[1]
+        segments = data["traj"]  # maybe segments = data[0]
         contains_yaw = len(segments) == 4
         # unpack the data so that the outer index is the slice index, and the inner index switches between x-y-z-yaw
         segments = list(zip(*segments))
