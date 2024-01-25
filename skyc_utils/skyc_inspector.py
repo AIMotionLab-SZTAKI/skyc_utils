@@ -11,35 +11,7 @@ import bisect
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import pickle
-import tkinter as tk
-from tkinter import filedialog
-from functools import partial
-
-
-def open_file_dialog(file_path_var, root):
-    file_path = filedialog.askopenfilename(initialdir=os.path.dirname(__file__),
-                                           title="Select a skyc file!",
-                                           filetypes=[("skyc files", "*.skyc"), ("all files", "*.*")])
-    if file_path:
-        print(f"Selected file: {file_path}")
-        file_path_var[0] = file_path
-        root.destroy()
-
-
-def select_file() -> Union[None, str]:
-    """ Function that prompts the user to select a skyc file, and returns the file's name if successful.
-    Else returns None"""
-    selecter = tk.Tk()
-    selecter.title("Select skyc file!")
-    selecter.geometry("300x100")
-    # using a list to mimic a mutable object (I hate python so much why are you forcing me to
-    # do this, just let me pass this by reference, horrible toy language...)
-    selected_file = [None]
-    button_func = partial(open_file_dialog, selected_file, selecter)
-    button = tk.Button(selecter, text="Select skyc file!", command=button_func, width=20, height=4)
-    button.pack(pady=20)
-    selecter.mainloop()
-    return selected_file[0]
+from skyc_utils.utils import select_file, cleanup
 
 
 def assert_no_car_collision(drones: List[List[List[float]]], car: List[List[float]]):
@@ -146,13 +118,6 @@ def drone_pose_to_vertices(pose: List[float]) -> List[List[np.ndarray]]:
     return [[rotated_translated_corners[vertex] for vertex in face] for face in faces]  # extract the vertices
 
 
-def cleanup(skyc_filename: str) -> None:
-    '''Function that deletes the folder from which we extracted the data.'''
-    folder_name = os.path.splitext(skyc_filename)[0]  # first element of the list is the file name, second is ".skyc"
-    if os.path.exists(folder_name):
-        shutil.rmtree(folder_name)
-
-
 def unpack_skyc_file(skyc_filename: str) -> str:
     '''Function that takes a skyc file and extracts its contents neatly into a folder, as if we used winrar. Returns
     the name of this folder.'''
@@ -186,7 +151,7 @@ def get_traj_data(skyc_file: str) -> List[dict]:
                 ctrl_point_num = [0, 2, 6] if traj_type == "COMPRESSED" else [0, 1, 2, 3, 4]
                 for point in points:
                     assert len(point[2]) in ctrl_point_num  # throw an error if the degree is not matching the type!
-    cleanup(skyc_file)
+    cleanup(files=[], folders=[folder_name])
     return traj_data
 
 
@@ -436,7 +401,7 @@ def plot_data(traj_eval: List[List[List[float]]],
 
 
 if __name__ == "__main__":
-    SKYC_FILE: Union[str, None] = select_file()
+    SKYC_FILE: Union[str, None] = select_file("skyc")
     # SKYC_FILE = "../skyc_maker/skyc_maker/test.skyc"
     if SKYC_FILE is not None:
         traj_data = get_traj_data(SKYC_FILE)  # this will be a list of the dictionaries in the trajectory.json files
