@@ -4,6 +4,26 @@ from functools import partial
 from typing import List, Optional, Union
 import os
 import shutil
+from scipy import interpolate as interpolate
+import numpy as np
+
+
+def is_num(var):
+    """Why isn't this a built-in?????"""
+    return isinstance(var, float) or isinstance(var, int)
+
+
+def extend_ppoly(ppoly: interpolate.PPoly):
+    """Duplicates the first and last coefficients and breakpoints of a ppoly object to be repated as many times
+    at the start and end as the dimesion of the ppoly."""
+    dim = ppoly.c.shape[0]
+    first_col_extension = np.repeat(ppoly.c[:, [0]], dim - 1, axis=1)
+    last_col_extension = np.repeat(ppoly.c[:, [-1]], dim - 1, axis=1)
+    ppoly.c = np.concatenate((first_col_extension, ppoly.c, last_col_extension), axis=1)
+    first_x_extension = np.repeat(ppoly.x[[0]], dim - 1)
+    last_x_extension = np.repeat(ppoly.x[[-1]], dim - 1)
+    ppoly.x = np.concatenate((first_x_extension, ppoly.x, last_x_extension))
+    return ppoly
 
 
 def open_file_dialog(file_path_var: List[Optional[str]], root: tk.Tk, filetype: str) -> None:

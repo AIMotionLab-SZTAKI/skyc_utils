@@ -5,10 +5,11 @@ import numpy as np  # !
 import os
 import shutil
 import zipfile
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Union
 from dataclasses import dataclass
 import pickle
-from skyc_utils.utils import cleanup
+from skyc_utils.utils import cleanup, is_num
+from enum import Enum
 
 
 def determine_shorter_deg(start: float, end: float):
@@ -74,16 +75,20 @@ def determine_knots(time_vector, N):
     return result
 
 
+class TrajectoryType(Enum):
+    POLY4D = "POLY4D"
+    COMPRESSED = "COMPRESSED"
+
+
 class Trajectory:
     """
     A class representing all the information regarding a trajectory.
     """
-    def __init__(self, traj_type: str):
-        self.parameters = None  # parameters that we set during flight
+    def __init__(self, traj_type: Union[str, TrajectoryType] = TrajectoryType.POLY4D):
+        self.parameters = []  # parameters that we set during flight
         # www.bitcraze.io/documentation/repository/crazyflie-firmware/master/functional-areas/trajectory_formats/
-        assert traj_type == "POLY4D" or traj_type == "COMPRESSED"
-        self.type = traj_type
-        self.degree = 5 if traj_type == "POLY4D" else 3
+        self.type = traj_type.value
+        self.interpolation_degree = 5 if self.type == TrajectoryType.POLY4D else 3
         # regardless of whether the trajectory gets interpreted as poly4d or compressed, it will be packaged as bezier
         # segments in the skyc file for reasons discussed in the wiki of the skybrush server:
         # github.com/AIMotionLab-SZTAKI/skybrush-server/wiki/Changes-from-stock-Skybrush#adding-poly4d-trajectory-representation
@@ -158,12 +163,34 @@ class Trajectory:
         goto_segment = [self.bezier_repr[-1][0]+dt, bezier_curve[-1], bezier_curve[1:-1]]
         self.bezier_repr.append(goto_segment)
 
+    def add_ppoly(self, ppolys: XYZYaw):
+        """Add a segment described by interpolate.PPoly objects. Note that in an interpolate.PPoly object, as returned
+        by interpolate.PPoly.from_spline, the first and last dimension number breakpoints and coefficiet columns
+        are the same. If this is not the case, use the function extend_poly() to make it so.
+        """
+        degree = ppolys.x.c.shape[0]
+        bpolys = XYZYaw(*[interpolate.BPoly.from_power_basis(ppoly) for ppoly in ppolys])
+
+        # These two lines below seem complicated but all they do is pack the data above into a convenient form: a list
+        # of lists where each element looks like this: [t, (x,y,z), (x,y,z), (x,y,z)].
+        bpoly_pts = list(zip(list(bpolys.x.x)[degree:-(degree-1)],
+                             *[list(bpoly.c.transpose())[degree-1:-(degree-1)] for bpoly in bpolys]))
+        # at this point bpoly_pts contains the control points for the segments, but that's not exactly what we need in
+        # the skyc file: we need the last point, and the inside points
+        bezier_curves = [[element[0]] + list(zip(*list(element[1:]))) for element in bpoly_pts]
+        for bezier_curve in bezier_curves:
+            curve_to_append = [bezier_curve[0],
+                               bezier_curve[-1],
+                               bezier_curve[2:-1]]
+            self.bezier_repr.append(curve_to_append)
+
     def add_interpolated_traj(self, t_x_y_z_yaw, number_of_segments, method="scipy"):
         """
         t_x_y_z_yaw is the raw interpolated data that we need to organize into number_of_segments bezier segments,
         we then add these segments to the bezier representation. This function doesn't care about continuity in the
         trajectory, if the user wishes c2 continuity, it is up to them to provide that with the correct goto segment.
         """
+        # TODO: find a better way (we saw during Palko's demo that this is a bit whack)
         assert self.bezier_repr is not None
         if self.type == "POLY4D":
             assert number_of_segments < 60
@@ -183,26 +210,14 @@ class Trajectory:
         w = [1] * len(t)  # if the fit is particularly bad a certain point in the path, we can adjust weights here
         if method != "scipy":  # TODO
             raise NotImplementedError
-        splines = XYZYaw(x=interpolate.splrep(t, x, w, k=self.degree, task=-1, t=knots),
-                         y=interpolate.splrep(t, y, w, k=self.degree, task=-1, t=knots),
-                         z=interpolate.splrep(t, z, w, k=self.degree, task=-1, t=knots),
-                         yaw=interpolate.splrep(t, yaw, w, k=self.degree, task=-1, t=knots))
+        splines = XYZYaw(x=interpolate.splrep(t, x, w, k=self.interpolation_degree, task=-1, t=knots),
+                         y=interpolate.splrep(t, y, w, k=self.interpolation_degree, task=-1, t=knots),
+                         z=interpolate.splrep(t, z, w, k=self.interpolation_degree, task=-1, t=knots),
+                         yaw=interpolate.splrep(t, yaw, w, k=self.interpolation_degree, task=-1, t=knots))
         # BPoly can be constructed from PPoly but not from BSpline. PPoly can be constructed from BSPline. BSpline can
         # be fitted to points. So Points->PPoly->BPoly. The coeffs of the BPoly representation are the control points.
         ppolys = XYZYaw(*[interpolate.PPoly.from_spline(spline) for spline in splines])
-        bpolys = XYZYaw(*[interpolate.BPoly.from_power_basis(ppoly) for ppoly in ppolys])
-        # These two lines below seem complicated but all they do is pack the data above into a convenient form: a list
-        # of lists where each element looks like this: [t, (x,y,z), (x,y,z), (x,y,z)].
-        bpoly_pts = list(zip(list(bpolys.x.x)[self.degree + 1:-self.degree],
-                             *[list(bpoly.c.transpose())[self.degree:-self.degree] for bpoly in bpolys]))
-        # at this point bpoly_pts contains the control points for the segments, but that's not exactly what we need in
-        # the skyc file: we need the last point, and the inside points
-        bezier_curves = [[element[0]] + list(zip(*list(element[1:]))) for element in bpoly_pts]
-        for bezier_curve in bezier_curves:
-            curve_to_append = [bezier_curve[0],
-                               bezier_curve[-1],
-                               bezier_curve[2:-1]]
-            self.bezier_repr.append(curve_to_append)
+        self.add_ppoly(ppolys)
 
     def export_json(self, write_file: bool = True):
         """
@@ -222,9 +237,10 @@ class Trajectory:
                 f.write(json_object)
         return json_object
 
-
-def is_num(var):
-    return isinstance(var, float) or isinstance(var, int)
+    def add_parameter(self, t: Union[int, float], param: str, value: Union[int, float]):
+        """Using this function instead of directly setting trajectory.parameters ensures that we don't mess up by
+        writing the parameters in traj.parameters in the wrong order (such as parameter, value, time)."""
+        self.parameters.append([t, param, value])
 
 
 def write_skyc(trajectories: List[Trajectory], name=sys.argv[0][:-3]):
@@ -252,7 +268,7 @@ def write_skyc(trajectories: List[Trajectory], name=sys.argv[0][:-3]):
             "landAt": Data[-1][1][0:3],
             "name": f"drone_{index}",
         }
-        if parameters is not None:
+        if parameters is not None and len(parameters) > 0:
             for parameter in parameters:
                 assert is_num(parameter[0]) and isinstance(parameter[1], str) and is_num(parameter[2])
             drone_settings["parameters"] = parameters
@@ -261,75 +277,75 @@ def write_skyc(trajectories: List[Trajectory], name=sys.argv[0][:-3]):
             "settings": drone_settings
         })
 
-        # Create the 'drone_1' folder if it doesn't already exist
+        # Create the 'drone_x' folder if it doesn't already exist
         drone_folder = os.path.join('drones', f'drone_{index}')
         os.makedirs(drone_folder, exist_ok=True)
         shutil.move('trajectory.json', drone_folder)
-        # This wall of text below is just overhead that is required to make a skyc file.
-        ########################################CUES.JSON########################################
-        items = [{"time": 0.0,
-                  "name": "start"}]
-        cues = {
-            "version": 1,
-            "items": items
-        }
-        json_object = json.dumps(cues, indent=2)
-        with open("cues.json", "w") as f:
-            f.write(json_object)
-        #######################################SHOW.JSON###########################################
-        validation = {
-            "maxAltitude": 2.0,
-            "maxVelocityXY": 2.0,
-            "maxVelocityZ": 1.5,
-            "minDistance": 0.8
-        }
-        cues = {
-            "$ref": "./cues.json"
-        }
-        settings = {
-            "cues": cues,
-            "validation": validation
-        }
-        meta = {
-            "id": f"{name}.py",
-            "inputs": [f"{name}.py"]
-        }
-        show = {
-            "version": 1,
-            "settings": settings,
-            "swarm": {"drones": drones},
-            "environment": {"type": "indoor"},
-            "meta": meta,
-            "media": {}
-        }
-        json_object = json.dumps(show, indent=2)
-        with open("show.json", "w") as f:
-            f.write(json_object)
+    # This wall of text below is just overhead that is required to make a skyc file.
+    ########################################CUES.JSON########################################
+    items = [{"time": 0.0,
+              "name": "start"}]
+    cues = {
+        "version": 1,
+        "items": items
+    }
+    json_object = json.dumps(cues, indent=2)
+    with open("cues.json", "w") as f:
+        f.write(json_object)
+    #######################################SHOW.JSON###########################################
+    validation = {
+        "maxAltitude": 2.0,
+        "maxVelocityXY": 2.0,
+        "maxVelocityZ": 1.5,
+        "minDistance": 0.8
+    }
+    cues = {
+        "$ref": "./cues.json"
+    }
+    settings = {
+        "cues": cues,
+        "validation": validation
+    }
+    meta = {
+        "id": f"{name}.py",
+        "inputs": [f"{name}.py"]
+    }
+    show = {
+        "version": 1,
+        "settings": settings,
+        "swarm": {"drones": drones},
+        "environment": {"type": "indoor"},
+        "meta": meta,
+        "media": {}
+    }
+    json_object = json.dumps(show, indent=2)
+    with open("show.json", "w") as f:
+        f.write(json_object)
 
-        # Create a new zip file
-        with zipfile.ZipFile(f"{name}.zip", 'w', zipfile.ZIP_DEFLATED) as zipf:
-            # Add the first file to the zip
-            zipf.write("show.json")
+    # Create a new zip file
+    with zipfile.ZipFile(f"{name}.zip", 'w', zipfile.ZIP_DEFLATED) as zipf:
+        # Add the first file to the zip
+        zipf.write("show.json")
 
-            # Add the second file to the zip
-            zipf.write("cues.json")
+        # Add the second file to the zip
+        zipf.write("cues.json")
 
-            # Recursively add files from the specified folder and its sub-folders
-            for root, _, files in os.walk("drones"):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    zipf.write(file_path)
+        # Recursively add files from the specified folder and its sub-folders
+        for root, _, files in os.walk("drones"):
+            for file in files:
+                file_path = os.path.join(root, file)
+                zipf.write(file_path)
 
-        print('Compression complete. The files and folder have been zipped.')
+    print('Compression complete. The files and folder have been zipped.')
 
-        os.rename(f'{name}.zip', f'{name}.skyc')
-        # Delete everything that's not 'trajectory.skyc'
-        cleanup(files=["show.json",
-                       "cues.json",
-                       f"{name}.zip",
-                       "trajectory.json"],
-                folders=["drones"])
-        print(f"{name}.skyc ready!")
+    os.rename(f'{name}.zip', f'{name}.skyc')
+    # Delete everything that's not 'trajectory.skyc'
+    cleanup(files=["show.json",
+                   "cues.json",
+                   f"{name}.zip",
+                   "trajectory.json"],
+            folders=["drones"])
+    print(f"{name}.skyc ready!")
 
 
 def evaluate_pickle(pickle_name: str, *, x_offset=0.0, y_offset=0.0, z_offset=0.0, yaw_offset=0.0):
