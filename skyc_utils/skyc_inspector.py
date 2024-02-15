@@ -14,7 +14,7 @@ import pickle
 from skyc_utils.utils import select_file, cleanup
 
 
-def assert_no_car_collision(drones: List[List[List[float]]], car: List[List[float]]):
+def assert_no_car_collision(drones: List[List[List[float]]], car: List[List[float]], TIMESTEP):
     """Function that checks if the car's 'pole' has collided with any drones and raises an error if it has."""
     for idx, car_timestamp in enumerate(car[0]):
         for drone in drones:
@@ -26,7 +26,7 @@ def assert_no_car_collision(drones: List[List[List[float]]], car: List[List[floa
             assert distance > 0.2
 
 
-def eval_if_car():
+def eval_if_car(eval_times):
     """Function that checks if a car log file is present, and if it is, processes its data into an evaluation
     variable, similar to that of the drones: [[t0, t1, ..], [x0, x1, ...], [y0, y1, ...], [z0, z1, ...]]"""
     def get_index_by_time(times: List[float], t: float):
@@ -71,7 +71,7 @@ def rotate_point_around_origin(angle_deg: float, point: np.ndarray) -> np.ndarra
     return np.dot(rotmat, point)
 
 
-def car_position_to_vertices(position: List[float]) -> List[List[np.ndarray]]:
+def car_position_to_vertices(position: List[float], CAR_R, CAR_H) -> List[List[np.ndarray]]:
     """Function that approximates the car's taken 'pole' by a prism with a polygon base. It takes the position of the
     car and returns the vertices of the prism."""
     angles = 10  # the angles of the polygon, larger -> more like a circle
@@ -90,7 +90,7 @@ def car_position_to_vertices(position: List[float]) -> List[List[np.ndarray]]:
     return [[np.array(corners[vertex]) for vertex in face] for face in faces]
 
 
-def drone_pose_to_vertices(pose: List[float]) -> List[List[np.ndarray]]:
+def drone_pose_to_vertices(pose: List[float], L, H, P, DEFAULT_ANGLE) -> List[List[np.ndarray]]:
     """Function that takes a pose and returns the vertices that the drone's model will contain in that pose. The pose
     may or may not contain a heading. If it doesn't, then the default angle shall be used."""
     corners = [[-L / 2, -L / 2, -H / 2],
@@ -147,8 +147,8 @@ def get_traj_data(skyc_file: str) -> List[dict]:
                 traj_data.append(data)
                 traj_type = data.get("type", "COMPRESSED").upper()
                 # compressed trajectories can only be of degree 1, 3 and 7 as per the bitcraze documentation
-                # if a trajectory is not compressed, it is poly4d, which (for now) can only have degrees up to 5
-                ctrl_point_num = [0, 2, 6] if traj_type == "COMPRESSED" else [0, 1, 2, 3, 4]
+                # if a trajectory is not compressed, it is poly4d, which can only have degrees up to 7
+                ctrl_point_num = [0, 2, 6] if traj_type == "COMPRESSED" else [0, 1, 2, 3, 4, 5, 6]
                 for point in points:
                     assert len(point[2]) in ctrl_point_num  # throw an error if the degree is not matching the type!
     cleanup(files=[], folders=[folder_name])
@@ -181,7 +181,7 @@ def extend_takeoff_land(traj_data: List[dict]) -> Tuple[float, float]:
 
 
 def evaluate_segment(points: List[List[float]], start_time: float, end_time: float,
-                     eval_time, has_yaw: bool) -> Tuple[float, ...]:
+                     eval_time, has_yaw: bool, LIMITS) -> Tuple[float, ...]:
     # TODO: find a more efficient method
     '''Function that takes the control points of a bezier curve, creates an interpolate.BPoly object for each
     dimension of the curve, evaluates them at the given time and returns a tuple with the time, x, y, z and yaw.'''
@@ -248,7 +248,7 @@ def get_derivative(txyz_yaw: List[List[float]]) -> List[List[float]]:
     return output
 
 
-def assert_no_collisions(traj_eval: List[List[List[float]]]) -> None:
+def assert_no_collisions(traj_eval: List[List[List[float]]], TIMESTEP) -> None:
     '''Function that asserts that for every drone, paired with every other drone, their timestamps are identical and
     their euclidean distance is smaller than 0.2, which is apprixmately the size of a drone.'''
     num_of_timestamps = len(traj_eval[0][0])
@@ -304,7 +304,7 @@ class PausableAnimation:
 
 def animate(limits: Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]],
             fps: float, speed: float, timestep: float, traj_eval: List[List[List[float]]],
-            car_eval: Optional[List[List[float]]]) -> FuncAnimation:
+            car_eval: Optional[List[List[float]]], COLORS) -> FuncAnimation:
     """Function that takes initializes the 3D plot for the animation, as well as the animation itself then returns the
     animation object."""
     fig = plt.figure()
@@ -343,7 +343,7 @@ def animate(limits: Tuple[Tuple[float, float], Tuple[float, float], Tuple[float,
 
 def plot_data(traj_eval: List[List[List[float]]],
               first_deriv: List[List[List[float]]],
-              second_deriv: List[List[List[float]]]) -> None:
+              second_deriv: List[List[List[float]]], traj_data) -> None:
     """Function that takes cares of the plotting. It has one figure, with a column of subplots for each drone. There
     will be 3 rows: pose/angle, their derivatives and their 2nd derivatives"""
     fig, subplots = plt.subplots(3, len(traj_eval))
@@ -400,9 +400,11 @@ def plot_data(traj_eval: List[List[List[float]]],
     fig.subplots_adjust(hspace=0.4)
 
 
-if __name__ == "__main__":
-    SKYC_FILE: Union[str, None] = select_file("skyc")
-    # SKYC_FILE = "../skyc_maker/skyc_maker/test.skyc"
+def inspect(filename=None):
+    if filename is None:
+        SKYC_FILE: Union[str, None] = select_file("skyc")
+    else:
+        SKYC_FILE = filename
     if SKYC_FILE is not None:
         traj_data = get_traj_data(SKYC_FILE)  # this will be a list of the dictionaries in the trajectory.json files
     else:
@@ -410,15 +412,15 @@ if __name__ == "__main__":
     if len(traj_data) < 10:
         LIMITS = ((-2, 2), (-2, 2), (-0.05, 1.6))  # physical constraints of the optitrack system
     else:
-        LIMITS = ((-1, len(traj_data)*0.5 + 1), (-1, len(traj_data)*0.5 + 1), (-0.1, 2))  # TODO
+        LIMITS = ((-1, len(traj_data) * 0.5 + 1), (-1, len(traj_data) * 0.5 + 1), (-0.1, 2))  # TODO
     TIMESTEP = 0.005  # we keep this relatively constant for the sake of the animation coming later
     takeoff_time, land_time = extend_takeoff_land(traj_data)  # make every trajectory start and end at the same time
     eval_times = list(np.linspace(takeoff_time, land_time, round((land_time - takeoff_time) / TIMESTEP)))
     traj_eval = [evaluate_trajectory(trajectory, eval_times) for trajectory in traj_data]
-    assert_no_collisions(traj_eval)
-    car_eval = eval_if_car()
+    assert_no_collisions(traj_eval, TIMESTEP)
+    car_eval = eval_if_car(eval_times)
     if car_eval is not None:
-        assert_no_car_collision(drones=traj_eval, car=car_eval)
+        assert_no_car_collision(drones=traj_eval, car=car_eval, TIMESTEP=TIMESTEP)
     first_deriv = [get_derivative(item) for item in traj_eval]
     second_deriv = [get_derivative(item) for item in first_deriv]
     ANIM_FPS = 50
@@ -434,8 +436,10 @@ if __name__ == "__main__":
     P = 0.04 * DRONE_SCALE
     DEFAULT_ANGLE = 0
     if len(traj_eval) <= 5:
-        plot_data(traj_eval, first_deriv, second_deriv)
-    animation = animate(LIMITS, ANIM_FPS, ANIM_SPEED, TIMESTEP, traj_eval, car_eval)
+        plot_data(traj_eval, first_deriv, second_deriv, traj_data)
+    animation = animate(LIMITS, ANIM_FPS, ANIM_SPEED, TIMESTEP, traj_eval, car_eval, COLORS)
     plt.show()
 
 
+if __name__ == "__main__":
+    inspect()
