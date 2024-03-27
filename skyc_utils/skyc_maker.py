@@ -1,54 +1,74 @@
 import json
+import math
 from scipy import interpolate as interpolate  # !
+from scipy.interpolate import PPoly
 import sys
 import numpy as np  # !
 import os
 import shutil
 import zipfile
-from typing import List, Optional, Any, Union
+from typing import List, Optional, Any, Union, Sequence, Tuple
 from dataclasses import dataclass
 import pickle
-from skyc_utils.utils import cleanup, is_num
+from skyc_utils.utils import *
 from enum import Enum
 
 
-def determine_shorter_deg(start: float, end: float):
-    """If we did a turn from 350 to 10 degrees, the goto segment planner would turn the long way around, going
-    from 350->340->330...20->10, instead of going the short way, which is 350->360->370=10. This function gives
-    a target angle that yields turning the shortest way."""
-    start_norm = start % 360
-    end_norm = end % 360
-    delta = end_norm - start_norm
-    if delta > 180:
-        delta = delta - 360
-    elif delta < -180:
-        delta = delta + 360
-    return start + delta
-
-
-@dataclass
 class XYZYaw:
     """
-    A way to encapsulate data that is 4-dimensional. For example, we may store a spline each for x, y, z and yaw.
+    A way to encapsulate data that has an x, y, z and yaw dimension. For example, we may store a spline for each.
     Using this class, we can reach these both by indexing, iterating and directly addressing like .x, .y, etc.
-    A simple way of making a XYZYaw object from an iterable of length 4, is like so: obj = XYZYaw(*iter_obj)
     An XYZYaw is also iterable, therefore *obj is fine, and also, obj[0]=obj.x, obj[3]=obj.yaw, etc.
-    Note that there is currently no protection in place to ensure that x, y, z and yaw are the same type. TODO
+    You can initialize an XYZYaw object with:
+    -keyword arguments: XYZYaw(x=.., y=..., z=..., yaw=...)
+    -any iterable of length 4: XYZYaw([0, 0, 0, 0]) # TODO: with another XYZYaw?
+    -four values of the same type (float/int are compatible here): XYZYaw(0, 0, 0, 0)
     """
-    x: Any
-    y: Any
-    z: Any
-    yaw: Any
+    def __init__(self, *args, **kwargs):
+        if args and kwargs:
+            raise ValueError  # cannot have both keyword and positional arguments like this: XYZYaw(0, 0, 0, yaw=0)
+        # if we used keyword argumens, we must take exactly the following ones: x, y, z and yaw
+        if len(kwargs) == 4 and all(key in kwargs for key in ('x', 'y', 'z', 'yaw')):
+            self.data = [kwargs['x'], kwargs['y'], kwargs['z'], kwargs['yaw']]
+        elif len(args) == 4:  # if we took positional arguments, we may have four, corresponding to x, y, z, yaw
+            self.data = args
+        elif len(args) == 1:  # or we took exactly one, that is of length 4 (an iterable or sequence)
+            if len(args[0]) == 4:
+                self.data = args[0]
+            else:
+                raise ValueError
+        else:
+            raise ValueError
+        # if X is a number, the others must be numbers as well
+        if is_num(self.x):
+            if not all(is_num(e) for e in self.data[1:]):
+                raise ValueError
+        else:  # if X is anything else other than a number, the rest must also be exactly that type
+            expected_type = type(self.x)
+            if not all(isinstance(e, expected_type) for e in self.data[1:]):
+                raise ValueError
 
-    def __getitem__(self, idx):
-        if idx == 0:
-            return self.x
-        elif idx == 1:
-            return self.y
-        elif idx == 2:
-            return self.z
-        elif idx == 3:
-            return self.yaw
+    @property
+    def x(self):
+        return self.data[0]
+
+    @property
+    def y(self):
+        return self.data[1]
+
+    @property
+    def z(self):
+        return self.data[2]
+
+    @property
+    def yaw(self):
+        return self.data[3]
+
+    def __getitem__(self, key):
+        if isinstance(key, int) and key <= 3:
+            return self.data[key]
+        elif isinstance(key, slice):
+            return self.data[key]
         else:
             return None
 
@@ -60,21 +80,6 @@ class XYZYaw:
             yield attr
 
 
-def determine_knots(time_vector, N):
-    """
-    returns knot vector for the BSplines according to the incoming timestamps and the desired number of knots
-    Problems start to arise when part_length becomes way smaller than N, so generally keep them longer :)
-    Knots may either be spaced equally in time, or by index, currently we do it by index
-    """
-    # part_length = len(time_vector) // N
-    # result = time_vector[::part_length][:N]
-    # result.append(time_vector[-1])
-    start = min(time_vector)
-    end = max(time_vector)
-    result = list(np.linspace(start, end, N))
-    return result
-
-
 class TrajectoryType(Enum):
     POLY4D = "POLY4D"
     COMPRESSED = "COMPRESSED"
@@ -84,97 +89,73 @@ class Trajectory:
     """
     A class representing all the information regarding a trajectory.
     """
-    def __init__(self, traj_type: Union[str, TrajectoryType] = TrajectoryType.POLY4D):
+    def __init__(self, traj_type: TrajectoryType = TrajectoryType.COMPRESSED, degree=3):
         self.parameters = []  # parameters that we set during flight
         # www.bitcraze.io/documentation/repository/crazyflie-firmware/master/functional-areas/trajectory_formats/
-        self.type = traj_type.value
-        self.interpolation_degree = 5 if self.type == TrajectoryType.POLY4D else 3
+        self.type = traj_type
+        if self.type == TrajectoryType.COMPRESSED:
+            assert degree in [1, 3, 7]
+        else:
+            assert degree <= 7
+        self.degree = degree
+        self.start: XYZYaw = XYZYaw(0, 0, 0, 0)
+        # most functions build self.ppoly, which carries all the data regarding the trajectory. It's an XYZYaw object,
+        # with each dimension being an interpolate.PPoly object
+        self.ppoly: Optional[XYZYaw] = None
         # regardless of whether the trajectory gets interpreted as poly4d or compressed, it will be packaged as bezier
         # segments in the skyc file for reasons discussed in the wiki of the skybrush server:
         # github.com/AIMotionLab-SZTAKI/skybrush-server/wiki/Changes-from-stock-Skybrush#adding-poly4d-trajectory-representation
+        # to this end, we may have a bezier representation of the curve, which is calculated directly from the ppoly
+        # representation by the function self.set_bezier_repr
         self.bezier_repr: Optional[List] = None
+
+    @property
+    def end_condition(self) -> Tuple[XYZYaw, XYZYaw]:
+        """
+        Returns the end conditions at the first and last timestamp in the current trajectory, up to the 3rd derivative.
+        These will be returned in a tuple (0=beginning, 1=end) of XYZYaw objects, where each dimension is of length 3,
+        representing derivatives for that dimension (0th is position). The reason we return only position, velocity,
+        acceleration and jerk is that the curves can only have up to degree 7, meaning 8 coefficients, making it
+        possible to provide 4-4 end conditions.
+        """
+        if self.ppoly is None:
+            # We suppose that the starting derivatives are 0. Technically this doesn't need to be the case, but this
+            # is such a rare use case that it's fine. UNLESS... TODO
+            start = XYZYaw([[pos, 0.0, 0.0, 0.0] for pos in self.start])
+            end = XYZYaw([[pos, 0.0, 0.0, 0.0] for pos in self.start])
+        else:
+            start = XYZYaw([[ppoly(ppoly.x[0], nu=k) for k in range(4)] for ppoly in self.ppoly])
+            end = XYZYaw([[ppoly(ppoly.x[-1], nu=k) for k in range(4)] for ppoly in self.ppoly])
+        return start, end
 
     def set_start(self, start: XYZYaw):
         """
-        Sets the starting point of the bezier representation, which is different from the rest, as it may not
-        include any control points.
+        Sets the starting point of the bezier representation, in case we want it different from 0, 0, 0, 0. This is
+        necessary, since when we do go_to segments, meaning we must have somewhere to go *from* in order to go *to*
+        somewhere. Self.start is presumed to be 0, 0, 0, 0 if not set.
         """
-        assert self.bezier_repr is None
         assert isinstance(start.x, (int, float)) and isinstance(start.y, (int, float)) and \
                isinstance(start.z, (int, float)) and isinstance(start.yaw, (int, float))
-        self.bezier_repr = [[0.0, [start.x, start.y, start.z, start.yaw], []]]
+        self.start = start
 
-    @property
-    def end_condition(self) -> XYZYaw:
+    def set_bezier_repr(self):
         """
-        Looks at the last two segments of the bezier representation and calculates the ending derivatives.
-        The end condition is an XYZYaw object where each dimension is a numpy array, in which the nth element (up to 2)
-        is the nth derivative in that dimension.
+        Constructs the bezier representation of the curve, in a state that's ready to be immediately written to a
+        json object in a skyc file: a list, where each element is:
+        [-a timestamp (arrive at this time!)
+        -a point (arrive to this point at that time!)
+        -a potentially empty list of auxiliary points, which are the inner points of each Bezier curve]
+        This way, each element in the list corresponds to a Bezier curve, the first point of which is the arrival
+        point of the last segment, the middle points are the auxiliary points, and the last point is the arrival
+        point of the current segment.
         """
-        if self.bezier_repr is None:
-            raise NotImplementedError  # if the starting point isn't initialized, don't look at this property!
-        if len(self.bezier_repr) == 1:  # if we have a starting point, but nothing else, then the derivatives are 0
-            return XYZYaw(x=np.array([self.bezier_repr[0][1][0], 0.0, 0.0]),
-                          y=np.array([self.bezier_repr[0][1][1], 0.0, 0.0]),
-                          z=np.array([self.bezier_repr[0][1][2], 0.0, 0.0]),
-                          yaw=np.array([self.bezier_repr[0][1][3], 0.0, 0.0]))
-        else:  # we have at least one bezier curve
-            # in the skyc file, the points of a bezier curve are the previous end, the control points, and the end point
-            lst_coeffs = [self.bezier_repr[-2][1]] + self.bezier_repr[-1][2] + [self.bezier_repr[-1][1]]
-            lst_coeffs = XYZYaw(*list(zip(*lst_coeffs)))  # organize them by dimension
-            t = self.bezier_repr[-1][0] - self.bezier_repr[-2][0]
-            # make them into a bernstein polynomial, which can be evaluated at the end
-            bpolys = XYZYaw(*[interpolate.BPoly([[coeff] for coeff in coeffs], [0, t]) for coeffs in lst_coeffs])
-            # return the XYZYaw object which consists of the evaluated derivatives for each dimension, 0 through 2
-            return XYZYaw(*[np.array([bpoly(t, nu=nu) for nu in range(3)]) for bpoly in bpolys])
-
-    def add_goto(self, goto: XYZYaw, dt: float, continuity: int = 3):
-        """Modifies the bezier representation to add a goto segment, with a given continuity (1: continuous in
-        position, 2: continuous in accelaration). Accordingly, in the goto you may give velocity and acceleration
-        constraints.
-        """
-        assert self.bezier_repr is not None
-        assert 1 <= continuity <= 3
-        goto_start = np.array(self.end_condition)[:, :continuity]
-        goto_end = np.array([np.append(e, np.zeros(continuity-len(e))) for e in [np.atleast_1d(x) for x in goto]])
-        goto_end[3, 0] = determine_shorter_deg(self.end_condition.yaw[0], goto_end[3][0])
-        t0 = 0
-        T = t0 + dt
-        #              c0, c1, c2,      c3,      c4,      c5
-        A1 = np.array([[1, t0, t0 ** 2, t0 ** 3, t0 ** 4, t0 ** 5],
-                       [0, 1, 2 * t0, 3 * t0 ** 2, 4 * t0 ** 3, 5 * t0 ** 4],
-                       [0, 0, 2, 6 * t0, 12 * t0 ** 2, 20 * t0 ** 3]])
-        A2 = np.array([[1, T, T ** 2, T ** 3, T ** 4, T ** 5],
-                       [0, 1, 2 * T, 3 * T ** 2, 4 * T ** 3, 5 * T ** 4],
-                       [0, 0, 2, 6 * T, 12 * T ** 2, 20 * T ** 3]])
-        A = np.vstack((A1[:continuity, :2*continuity], A2[:continuity, :2*continuity]))
-        # the derivatives we want to end with:
-        b = np.row_stack((np.column_stack(goto_start), np.column_stack(goto_end)))
-        # these coefficients solve the equations above:
-        c = np.linalg.solve(A, b)
-        # reshape them to fit the ordering needed by a PPoly object
-        coeffs = XYZYaw(*[col.reshape(len(col), 1) for col in np.transpose(np.flip(c, axis=0))])
-        ppolys = XYZYaw(*[interpolate.PPoly(cs, np.array([t0, T])) for cs in coeffs])
-        # BPoly objects can be made from PPoly objects. We could also calculate them by hand TODO
-        bpolys = XYZYaw(*[interpolate.BPoly.from_power_basis(ppoly) for ppoly in ppolys])
-        # the points of the resulting bezier curve, TODO: understand the connection between bpolys.c and the points
-        bezier_curve = np.concatenate([poly.c for poly in bpolys], axis=1).tolist()
-        # the resulting bezier representation looks like this: [prev_seg, [t_end, endpoint, [ctrl_points], next_seg]
-        goto_segment = [self.bezier_repr[-1][0]+dt, bezier_curve[-1], bezier_curve[1:-1]]
-        self.bezier_repr.append(goto_segment)
-
-    def add_ppoly(self, ppolys: XYZYaw):
-        """Add a segment described by interpolate.PPoly objects. Note that in an interpolate.PPoly object, as returned
-        by interpolate.PPoly.from_spline, the first and last dimension number breakpoints and coefficiet columns
-        are the same. If this is not the case, use the function extend_poly() to make it so.
-        """
-        degree = ppolys.x.c.shape[0]
-        bpolys = XYZYaw(*[interpolate.BPoly.from_power_basis(ppoly) for ppoly in ppolys])
-
+        assert self.ppoly is not None
+        start = XYZYaw([float(ppoly(0.0)) for ppoly in self.ppoly])
+        bezier_repr = [[0.0, [start.x, start.y, start.z, start.yaw], []]]
+        bpolys = XYZYaw(*[interpolate.BPoly.from_power_basis(ppoly) for ppoly in self.ppoly])
         # These two lines below seem complicated but all they do is pack the data above into a convenient form: a list
         # of lists where each element looks like this: [t, (x,y,z), (x,y,z), (x,y,z)].
-        bpoly_pts = list(zip(list(bpolys.x.x)[degree:-(degree-1)],
-                             *[list(bpoly.c.transpose())[degree-1:-(degree-1)] for bpoly in bpolys]))
+        bpoly_pts = list(zip(list(bpolys.x.x)[1:], *[list(bpoly.c.transpose()) for bpoly in bpolys]))
         # at this point bpoly_pts contains the control points for the segments, but that's not exactly what we need in
         # the skyc file: we need the last point, and the inside points
         bezier_curves = [[element[0]] + list(zip(*list(element[1:]))) for element in bpoly_pts]
@@ -182,54 +163,125 @@ class Trajectory:
             curve_to_append = [bezier_curve[0],
                                bezier_curve[-1],
                                bezier_curve[2:-1]]
-            self.bezier_repr.append(curve_to_append)
+            bezier_repr.append(curve_to_append)
+        self.bezier_repr = bezier_repr
 
-    def add_interpolated_traj(self, t_x_y_z_yaw, number_of_segments, method="scipy"):
+    def add_goto(self, goto: XYZYaw, dt: float, continuity: int = 2):
         """
-        t_x_y_z_yaw is the raw interpolated data that we need to organize into number_of_segments bezier segments,
-        we then add these segments to the bezier representation. This function doesn't care about continuity in the
-        trajectory, if the user wishes c2 continuity, it is up to them to provide that with the correct goto segment.
+        Modifies self.ppoly to extend it with a smooth goto segment.
+        goto: the setpoint of pos/vel/acc/jerk/.. to arrive with
+        dt: the duration of the goto
+        continuity: how many derivatives to be smooth in during the connection.
+        1 = smooth position (required), 2 = smooth velocity, 3 = smooth acc, 4 = smooth jerk.
+        Higher isn't possible, limited by the degree of the trajectory.
+        XYZYaw may contain derivatives if we want to arrive with a certain speed/acceleration. This is different
+        from continuity: if we give only an x-y-z yaw goto (no vel/acc), but we provide a continuity of 3, it is assumed
+        that we want the arrival to be with velocity/acceleration of 0. If more derivatives are given as a setpoint
+        than the continuity would allow for, the higher order derivatives are ignored. In addition, the degree of the
+        trajectory may limit the curve: if it is of degree 3, the solver will have 4 parameters, allowing for 4 boundary
+        conditions: 2 at each end (pos and vel), and a continuity of 1. The max continuity at degree 7 is accordingly 3.
+        TODO: With how we handle the trajectory now, we could add a similar command to add segments before the traj.
         """
-        # TODO: find a better way (we saw during Palko's demo that this is a bit whack)
-        assert self.bezier_repr is not None
-        if self.type == "POLY4D":
+        free_params = self.degree + 1  # how many coefficients the degree allows for
+        # how many derivatives we can guarantee continuity in, given the number of parameters
+        max_continuity = math.floor(free_params / 2)
+        continuity = min(continuity, max_continuity)
+        _, goto_start_derivs = self.end_condition  # discard the beginning derivatives
+        # make the derivatives at the start and end of the segment XYZYaw objects consisting of lists so that we don't
+        # have awkward type checkings (is it a float? can it be indexed? does it have a length? etc.)
+        goto_start_derivs = XYZYaw([as_list(thing) for thing in goto_start_derivs])
+        goto = XYZYaw([as_list(thing) for thing in goto])
+        # make sure the trajectory turns the shorter way around (when going from 0 to 270, go from 0 to -90 instead)
+        goto.yaw[0] = determine_shorter_deg(goto_start_derivs.yaw[0], goto.yaw[0])
+        goto_coeffs = []
+        for derivs_end, derivs_start in zip(goto, goto_start_derivs):
+            while len(derivs_end) < continuity:
+                derivs_end += [0.0]  # if continuity allows for more derivatives than provided, fill them with 0s
+            goto_end = derivs_end[:continuity]  # only consider the appropriate amount of derivatives
+            goto_start = derivs_start[:continuity]
+            goto_coeffs.append(calculate_polynomial_coefficients(goto_start, goto_end, 0, dt))
+        # calculate_polynomial_coefficients returns a list of coeffs, in ascending order of degree. In a PPoly object,
+        # they must be an ndarray of (deg+1, number_of_knots), in descending order of degree.
+        goto_coeffs = [np.flip(coeffs.reshape(len(coeffs), 1)) for coeffs in goto_coeffs]
+        if self.ppoly is None:
+            # we had no previous ppolys: add them now
+            self.ppoly = XYZYaw([PPoly(coeffs, np.array([0, dt])) for coeffs in goto_coeffs])
+            # and then extend their dimension to match the degree of the curve (filling the higher coeffs with 0s)
+            for ppoly in self.ppoly:
+                extend_ppoly_coeffs(ppoly, self.degree + 1)
+        else:
+            # we had previous ppolys:
+            for coeffs, ppoly in zip(goto_coeffs, self.ppoly):
+                # a new polynomial breakpoint is appended to the end, as the last breakpoint + the goto duration
+                ppoly.x = np.hstack((ppoly.x, ppoly.x[-1] + dt))
+                # if there are too few coefficients, fill the higher ones with 0s again, and append them to
+                # the end of the coefficients, corresponding to the new breakpoint
+                coeffs_extended = np.vstack((np.zeros((self.degree+1 - len(coeffs), 1)), coeffs))
+                ppoly.c = np.hstack((ppoly.c, coeffs_extended))
+
+    def add_interpolated_traj(self, t_x_y_z_yaw: List[List[float]], number_of_segments: int, method: str = "bspline",
+                              recalculate=False):
+        """
+        t_x_y_z_yaw is the raw interpolated data that we need to organize into number_of_segments polynomials.
+        This function doesn't care about continuity in the trajectory, if the user wishes continuity, it is up to them
+        to provide that with the correct goto segment before this trajectory segment.
+        We can use two (three) methods:
+        1.a:
+        "bspline", with recalculate set to False is the equivalent of the "old" skyc_utils method. This fits a spline
+        to the data points using splrep, and then converts the BSpline to a PPoly. There are two issues:
+        -Since we have to use a set number of knots, the fit won't be exact, and this means that the start and end
+        points may differ from the start and end points of the given data. This means that when we are fitting together
+        trajectory methods made this way, they may not link up perfectly. Some controllers are sensitive to this (like
+        geometric and mellinger)
+        -We can only fit up to degree 5
+        1.b:
+        "bspline", with recalculate set to True adds weights to the ends of the trajectory, forcing them to be closer
+        to the data points. It will do this as many times as it takes to get a good fit at the start and end, raising
+        the weights each time. This means that trajectory segments will link up nicely, but will take a longer time to ű
+        calculate.
+        -We can only fit up to degree 5 still
+        2:
+        "lsqspline": fits a spline of any degree (!) to the data, then replaces the first and last segments with
+        segments calculated by hand, that link up to the data points' start and end perfectly. In theory this is better
+        in every way than method 1, but it hasn't been tested as much.
+        """
+        if self.type == TrajectoryType.POLY4D:
             assert number_of_segments < 60
         t, x, y, z, yaw = t_x_y_z_yaw
-        t = [x+self.bezier_repr[-1][0] for x in t]  # timeshift
         # make sure that we don't make an unsafe trajectory, there can't be a break in the positions
-        assert abs(x[0]-self.end_condition.x[0]) < 0.01
-        assert abs(y[0] - self.end_condition.y[0]) < 0.01
-        assert abs(z[0] - self.end_condition.z[0]) < 0.01
-        assert abs(yaw[0] - self.end_condition.yaw[0]) < 10
-        # We need to give the splrep inside knots. I think [0] and [-1] should also technically be inside knots, but
-        # apparently not. I seem to remember that the first k-1 and last k-1 knots are the outside knots. Anyway, slprep
-        # seems to add k knots both at the end and at the beginning, instead of k-1 knots which is what would make sense
-        # to me. How it decides what those knots should be is a mystery to me, but upon checking them, they are the
-        # exact first and last knots that I would've added, so it works out kind of.
-        knots = determine_knots(t, number_of_segments)[1:-1]
-        w = [1] * len(t)  # if the fit is particularly bad a certain point in the path, we can adjust weights here
-        if method != "scipy":  # TODO
-            raise NotImplementedError
-        splines = XYZYaw(x=interpolate.splrep(t, x, w, k=self.interpolation_degree, task=-1, t=knots),
-                         y=interpolate.splrep(t, y, w, k=self.interpolation_degree, task=-1, t=knots),
-                         z=interpolate.splrep(t, z, w, k=self.interpolation_degree, task=-1, t=knots),
-                         yaw=interpolate.splrep(t, yaw, w, k=self.interpolation_degree, task=-1, t=knots))
-        # BPoly can be constructed from PPoly but not from BSpline. PPoly can be constructed from BSPline. BSpline can
-        # be fitted to points. So Points->PPoly->BPoly. The coeffs of the BPoly representation are the control points.
-        ppolys = XYZYaw(*[interpolate.PPoly.from_spline(spline) for spline in splines])
-        self.add_ppoly(ppolys)
+        end_condition = self.end_condition[1]
+        assert abs(x[0] - end_condition.x[0]) < 0.01
+        assert abs(y[0] - end_condition.y[0]) < 0.01
+        assert abs(z[0] - end_condition.z[0]) < 0.01
+        assert abs(yaw[0] - end_condition.yaw[0]) < 10
+        # the real magic is here, inside the data_to_ppoly function
+        ppoly_lst = [data_to_ppoly(value, t, number_of_segments, self.degree, method, recalculate=recalculate)
+                     for value in t_x_y_z_yaw[1:]]
+        self.add_ppoly(XYZYaw(ppoly_lst))
 
-    def export_json(self, write_file: bool = True):
+    def add_ppoly(self, ppoly_lst: XYZYaw):
+        """
+        Appends the given ppoly to the end of the existing ppoly, by extending the breakpoints and the coefficients.
+        """
+        if self.ppoly is None:
+            self.ppoly = ppoly_lst
+        else:
+            for ppoly, new_ppoly in zip(self.ppoly, ppoly_lst):
+                ppoly.x = np.hstack((ppoly.x, new_ppoly.x[1:] + ppoly.x[-1]))
+                ppoly.c = np.hstack((ppoly.c, new_ppoly.c))
+
+    def export_json(self, write_file: bool = True) -> str:
         """
         Returns the json formatted string of the bezier representation, and also writes it to a file if we wish.
         """
+        self.set_bezier_repr()
         # this is the format that a TrajectorySpecification requires:
         json_dict = {
             "version": 1,
             "points": self.bezier_repr,
             "takeoffTime": self.bezier_repr[0][0],
             "landingTime": self.bezier_repr[-1][0],
-            "type": self.type
+            "type": self.type.value
         }
         json_object = json.dumps(json_dict, indent=2)
         if write_file:
@@ -257,10 +309,11 @@ def write_skyc(trajectories: List[Trajectory], name=sys.argv[0][:-3]):
     os.makedirs('drones', exist_ok=True)
     drones = []
     for index, traj in enumerate(trajectories):
+        traj.export_json()
+        assert traj.bezier_repr is not None
         Data = traj.bezier_repr
         parameters = traj.parameters
         # The trajectory is saved to a json file with the data below
-        traj.export_json()
         drone_settings = {
             "trajectory": {"$ref": f"./drones/drone_{index}/trajectory.json#"},
             "home": Data[0][1][0:3],
@@ -348,7 +401,7 @@ def write_skyc(trajectories: List[Trajectory], name=sys.argv[0][:-3]):
     print(f"{name}.skyc ready!")
 
 
-def evaluate_pickle(pickle_name: str, *, x_offset=0.0, y_offset=0.0, z_offset=0.0, yaw_offset=0.0):
+def evaluate_pickle(pickle_name: str, *, x_offset=0.0, y_offset=0.0, z_offset=0.0, yaw_offset=0.0, granularity=100):
     """
     Helper function to evaluate pickles made by Dr. Prof. PhD Antal Péter
     """
@@ -363,7 +416,6 @@ def evaluate_pickle(pickle_name: str, *, x_offset=0.0, y_offset=0.0, z_offset=0.
         for segment in segments:
             # for each segment, segment[0] is the spline for x, [1] is for y, [2] is for z, [3] is for yaw. Within
             # those, [0] is the knot vector, [1] is the coeffs, [2] is the degree of the spline
-            granularity = 1000
             # technically, in the pickle, x, y, z and yaw could have different knots, but for practical reasons, they
             # obviously don't. We make use of this fact here to simplify the code, however, if the pickle's composition
             # was changed, then this would have to change as well. TODO: discuss this with Peti
