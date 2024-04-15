@@ -7,7 +7,7 @@ import numpy as np  # !
 import os
 import shutil
 import zipfile
-from typing import List, Optional, Any, Union, Sequence, Tuple
+from typing import List, Optional, Any, Union, Sequence, Tuple, Dict
 from dataclasses import dataclass
 import pickle
 from skyc_utils.utils import *
@@ -108,6 +108,8 @@ class Trajectory:
         # to this end, we may have a bezier representation of the curve, which is calculated directly from the ppoly
         # representation by the function self.set_bezier_repr
         self.bezier_repr: Optional[List] = None
+
+        self.lqr_params: Dict[str, List[Union[float, int]]] = {}
 
     @property
     def end_condition(self) -> Tuple[XYZYaw, XYZYaw]:
@@ -283,6 +285,7 @@ class Trajectory:
             "landingTime": self.bezier_repr[-1][0],
             "type": self.type.value
         }
+        json_dict = json_dict | self.lqr_params
         json_object = json.dumps(json_dict, indent=2)
         if write_file:
             with open("trajectory.json", "w") as f:
@@ -293,6 +296,12 @@ class Trajectory:
         """Using this function instead of directly setting trajectory.parameters ensures that we don't mess up by
         writing the parameters in traj.parameters in the wrong order (such as parameter, value, time)."""
         self.parameters.append([t, param, value])
+
+    def add_lqr_params(self, lqr_params: List[int], bounds: List[float], LQR_N=240):
+        assert len(lqr_params) == LQR_N * 64
+        assert len(bounds) == 128
+        self.lqr_params["K"] = lqr_params
+        self.lqr_params["bounds"] = bounds
 
 
 def write_skyc(trajectories: List[Trajectory], name=sys.argv[0][:-3]):
