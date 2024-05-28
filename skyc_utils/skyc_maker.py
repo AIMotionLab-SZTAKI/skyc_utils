@@ -1,5 +1,7 @@
 import json
 import math
+
+import matplotlib.pyplot as plt
 from scipy import interpolate as interpolate  # !
 from scipy.interpolate import PPoly
 import sys
@@ -7,7 +9,7 @@ import numpy as np  # !
 import os
 import shutil
 import zipfile
-from typing import List, Optional, Any, Union, Sequence, Tuple, Dict
+from typing import List, Optional, Any, Union, Sequence, Tuple
 from dataclasses import dataclass
 import pickle
 from skyc_utils.utils import *
@@ -108,8 +110,6 @@ class Trajectory:
         # to this end, we may have a bezier representation of the curve, which is calculated directly from the ppoly
         # representation by the function self.set_bezier_repr
         self.bezier_repr: Optional[List] = None
-
-        self.lqr_params: Dict[str, List[Union[float, int]]] = {}
 
     @property
     def end_condition(self) -> Tuple[XYZYaw, XYZYaw]:
@@ -221,44 +221,19 @@ class Trajectory:
                 coeffs_extended = np.vstack((np.zeros((self.degree+1 - len(coeffs), 1)), coeffs))
                 ppoly.c = np.hstack((ppoly.c, coeffs_extended))
 
-    def add_interpolated_traj(self, t_x_y_z_yaw: List[List[float]], number_of_segments: int, method: str = "bspline",
-                              recalculate=False):
+    def add_interpolated_traj(self, t_x_y_z_yaw: List[List[float]], number_of_segments: int, *,
+                              method: str, fit_ends: bool = False, force_0_derivs: bool = False,
+                              equidistant_knots: bool = False):
         """
-        t_x_y_z_yaw is the raw interpolated data that we need to organize into number_of_segments polynomials.
-        This function doesn't care about continuity in the trajectory, if the user wishes continuity, it is up to them
-        to provide that with the correct goto segment before this trajectory segment.
-        We can use two (three) methods:
-        1.a:
-        "bspline", with recalculate set to False is the equivalent of the "old" skyc_utils method. This fits a spline
-        to the data points using splrep, and then converts the BSpline to a PPoly. There are two issues:
-        -Since we have to use a set number of knots, the fit won't be exact, and this means that the start and end
-        points may differ from the start and end points of the given data. This means that when we are fitting together
-        trajectory methods made this way, they may not link up perfectly. Some controllers are sensitive to this (like
-        geometric and mellinger)
-        -We can only fit up to degree 5
-        1.b:
-        "bspline", with recalculate set to True adds weights to the ends of the trajectory, forcing them to be closer
-        to the data points. It will do this as many times as it takes to get a good fit at the start and end, raising
-        the weights each time. This means that trajectory segments will link up nicely, but will take a longer time to ű
-        calculate.
-        -We can only fit up to degree 5 still
-        2:
-        "lsqspline": fits a spline of any degree (!) to the data, then replaces the first and last segments with
-        segments calculated by hand, that link up to the data points' start and end perfectly. In theory this is better
-        in every way than method 1, but it hasn't been tested as much.
+        Add an interpolated segment to the trajectory, fitting to the t_x_y_z_yaw data with a given method, consisting
+        of the given number of segments. You may additionally choose to 'fit ends', meaning to try to match the start
+        and end of the points exactly, as well as force their derivatives to be 0.
         """
+        assert 1 <= self.degree <= 7
         if self.type == TrajectoryType.POLY4D:
             assert number_of_segments < 60
-        t, x, y, z, yaw = t_x_y_z_yaw
-        # make sure that we don't make an unsafe trajectory, there can't be a break in the positions
-        end_condition = self.end_condition[1]
-        assert abs(x[0] - end_condition.x[0]) < 0.01
-        assert abs(y[0] - end_condition.y[0]) < 0.01
-        assert abs(z[0] - end_condition.z[0]) < 0.01
-        assert abs(yaw[0] - end_condition.yaw[0]) < 10
-        # the real magic is here, inside the data_to_ppoly function
-        ppoly_lst = [data_to_ppoly(value, t, number_of_segments, self.degree, method, recalculate=recalculate)
-                     for value in t_x_y_z_yaw[1:]]
+        ppoly_lst = fit_ppoly_to_data(t_x_y_z_yaw, number_of_segments, self.degree, method=method, fit_ends=fit_ends,
+                                      force_0_derivs=force_0_derivs, equidistant_knots=equidistant_knots)
         self.add_ppoly(XYZYaw(ppoly_lst))
 
     def add_ppoly(self, ppoly_lst: XYZYaw):
@@ -285,7 +260,6 @@ class Trajectory:
             "landingTime": self.bezier_repr[-1][0],
             "type": self.type.value
         }
-        json_dict = json_dict | self.lqr_params
         json_object = json.dumps(json_dict, indent=2)
         if write_file:
             with open("trajectory.json", "w") as f:
@@ -296,12 +270,6 @@ class Trajectory:
         """Using this function instead of directly setting trajectory.parameters ensures that we don't mess up by
         writing the parameters in traj.parameters in the wrong order (such as parameter, value, time)."""
         self.parameters.append([t, param, value])
-
-    def add_lqr_params(self, lqr_params: List[int], bounds: List[float], LQR_N=240):
-        assert len(lqr_params) == LQR_N * 64
-        assert len(bounds) == 128
-        self.lqr_params["K"] = lqr_params
-        self.lqr_params["bounds"] = bounds
 
 
 def write_skyc(trajectories: List[Trajectory], name=sys.argv[0][:-3]):

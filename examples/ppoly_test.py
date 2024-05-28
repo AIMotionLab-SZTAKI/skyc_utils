@@ -1,79 +1,10 @@
-import tkinter as tk
-from tkinter import filedialog
-from functools import partial
-from typing import List, Optional, Union, Any, Tuple
-import os
-import shutil
-
-import matplotlib.pyplot as plt
-from scipy.interpolate import splev, splrep, PPoly
-from scipy import interpolate as interpolate
+from typing import List, Optional
+import scipy.interpolate as interpolate
 import numpy as np
+from skyc_utils.skyc_maker import Trajectory, write_skyc, XYZYaw, evaluate_pickle, TrajectoryType
+import matplotlib.pyplot as plt
 import math
-from copy import deepcopy
-from .optimal_trajectory import find_optimal_poly
-
-
-def is_num(var):
-    """Why isn't this a built-in?????"""
-    return isinstance(var, float) or isinstance(var, int)
-
-
-def open_file_dialog(file_path_var: List[Optional[str]], root: tk.Tk, filetype: str) -> None:
-    """
-    Helper function for select_file, which handles the selection window.
-    """
-    file_path = filedialog.askopenfilename(initialdir=os.path.dirname(__file__),
-                                           title=f"Select a {filetype} file!",
-                                           filetypes=[(f"{filetype} files", f"*.{filetype}"), ("all files", "*.*")])
-    if file_path:
-        print(f"Selected file: {file_path}")
-        file_path_var[0] = file_path
-        root.destroy()
-
-
-def select_file(filetype: str) -> Union[None, str]:
-    """ Function that prompts the user to select a skyc file, and returns the file's name if successful.
-    Else returns None"""
-    selecter = tk.Tk()
-    selecter.title(f"Select {filetype} file!")
-    selecter.geometry("300x100")
-    # using a list to mimic a mutable object (I hate python so much why are you forcing me to
-    # do this, just let me pass this by reference, horrible toy language for children and phds...)
-    selected_file = [None]
-    button_func = partial(open_file_dialog, selected_file, selecter, filetype)
-    button = tk.Button(selecter, text=f"Select {filetype} file!", command=button_func, width=20, height=4)
-    button.pack(pady=20)
-    selecter.mainloop()
-    return selected_file[0]
-
-
-def cleanup(files: List[str], folders: List[str]):
-    """
-    function meant for deleting unnecessary files
-    """
-    for file in files:
-        if os.path.exists(file):
-            os.remove(file)
-            print(f"Deleted {file}")
-    for folder in folders:
-        if os.path.exists(folder):
-            shutil.rmtree(folder)
-            print(f"Deleted {folder} folder")
-
-
-def determine_shorter_deg(start: float, end: float):
-    """If we did a turn from 350 to 10 degrees, the goto segment planner would turn the long way around, going
-    from 350->340->330...20->10, instead of going the short way, which is 350->360->370=10. This function gives
-    a target angle that yields turning the shortest way."""
-    start_norm = start % 360
-    end_norm = end % 360
-    delta = end_norm - start_norm
-    if delta > 180:
-        delta = delta - 360
-    elif delta < -180:
-        delta = delta + 360
-    return start + delta
+from skyc_utils.optimal_trajectory import find_optimal_poly
 
 
 def calculate_polynomial_coefficients(derivatives_start, derivatives_end, x_start: float, x_end: float):
@@ -117,9 +48,10 @@ def calculate_polynomial_coefficients(derivatives_start, derivatives_end, x_star
 def derivatives(values: List[float], times: List[float], n: int, eval_at: list[float]):
     """returns a list of length n+1, where the ith row is a list of the ith derivative at times eval_at. 0th row
     is the values themselves"""
-    spline = splrep(times, values, k=n)
-    deriv = [splev(eval_at, spline, der=i) for i in range(n+1)]
+    spline = interpolate.splrep(times, values, k=n)
+    deriv = [interpolate.splev(eval_at, spline, der=i) for i in range(n+1)]
     return deriv
+
 
 def duplicate_end_knots(knots, degree):
     knots = np.r_[(knots[0],) * degree, knots, (knots[-1],) * degree]
@@ -165,7 +97,6 @@ def fit_ppoly_lsq(t_x_y_z_yaw: List[List[float]], knots, degree: int, *, fit_end
     that start or end at exactly the desired point and derivatives.
     force_0_derivs: whether to force the start and end derivatives to be 0
     """
-    t, _, _, _, _ = t_x_y_z_yaw
     # when it comes to interpolate.make_lsq_spline, we need to give it duplicate end knots
     knots = duplicate_end_knots(knots, degree)
     # craft bsplines with the given knots, and transform them into piecewise polynomials
@@ -209,7 +140,6 @@ def fit_ppoly_mosek(t_x_y_z_yaw: List[List[float]], knots, degree: int, *,
     degree: the degree of the resulting piecewise polynomial
     force_0_derivs: whether to force the start and end derivatives to be 0
     """
-    t, _, _, _, _ = t_x_y_z_yaw
     bspline_lst = [interpolate.splrep(t, values, k=degree) for values in t_x_y_z_yaw[1:]]
     x, y, z, yaw = [interpolate.splev(knots, bspline) for bspline in bspline_lst]
     vel = [[knots[0], 0, 0, 0, 0]] + (len(knots) - 2) * [None] + [[knots[-1], 0, 0, 0, 0]]
@@ -261,24 +191,29 @@ def fit_ppoly_to_data(t_x_y_z_yaw: List[List[float]], number_of_segments: int, d
         raise NotImplementedError
 
 
-def as_list(thing: Any) -> List[Any]:
-    """
-    If the argument can be converted into a list, do so. If not, just pack it into a list of length 1.
-    """
-    if isinstance(thing, List):
-        return thing
-    elif isinstance(thing, (List, Tuple, np.ndarray)):
-        return list(thing)
-    else:
-        return [thing]
+if __name__ == "__main__":
+    pickle_filename = "traj.pickle"
+    N = 50
+    t_x_y_z_yaw, parameters = evaluate_pickle(pickle_filename)
+    t, _, _, _, _ = t_x_y_z_yaw
+    eq_knots = False
+    ppolys_1 = fit_ppoly_to_data(t_x_y_z_yaw, N, 5, method="lsqspline", equidistant_knots=eq_knots)
+    ppolys_2 = fit_ppoly_to_data(t_x_y_z_yaw, N, 5, method="lsqspline", fit_ends=True, equidistant_knots=eq_knots)
+    ppolys_3 = fit_ppoly_to_data(t_x_y_z_yaw, N, 5, method="lsqspline", fit_ends=True, force_0_derivs=True, equidistant_knots=eq_knots)
+    ppolys_4 = fit_ppoly_to_data(t_x_y_z_yaw, N, 5, method="bspline", equidistant_knots=eq_knots)
+    ppolys_5 = fit_ppoly_to_data(t_x_y_z_yaw, N, 5, method="mosek", fit_ends=True, equidistant_knots=eq_knots)
+    ppolys_6 = fit_ppoly_to_data(t_x_y_z_yaw, N, 5, method="mosek", fit_ends=True, force_0_derivs=True, equidistant_knots=eq_knots)
+    for i in range(4):
+        plt.figure()
+        # for knot in knots:
+        #     plt.axvline(x=knot, color='r')
+        plt.plot(t, ppolys_1[i](t), label="lsq")
+        plt.plot(t, ppolys_2[i](t), label="lsq, endfit")
+        plt.plot(t, ppolys_3[i](t), label="lsq, force0")
+        # plt.plot(t, ppolys_4[i](t), label="bspline")
+        plt.plot(t, ppolys_5[i](t), label="mosek")
+        plt.plot(t, ppolys_6[i](t), label="mosek, force0")
+        plt.plot(t, t_x_y_z_yaw[i+1], label="raw data")
+        legend = plt.legend(loc='upper right')
+    plt.show()
 
-
-def extend_ppoly_coeffs(ppoly: PPoly, coeff_num: int):
-    """
-    Add 0s as the higher order coefficients to make the ppoly have the provided number of coefficients, not affecting
-    the actual shape of the resulting curve.
-    """
-    ppoly_deg = ppoly.c.shape[0]
-    if ppoly_deg < coeff_num:
-        zeros_shape = (coeff_num - ppoly_deg, ppoly.c.shape[1])
-        ppoly.c = np.vstack((np.zeros(zeros_shape), ppoly.c))

@@ -9,6 +9,8 @@ requires-python = ">=3.9"
 dependencies = ["matplotlib",
                 "numpy",
                 "scipy",
-                "trio"]
+                "trio",
+                "casadi",
+                "mosek"]
 description = "Repository for storing scripts, classes and functions useful for aimotionlab cf drones."
 readme = "readme.md"

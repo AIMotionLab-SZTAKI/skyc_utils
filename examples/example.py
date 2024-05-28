@@ -14,20 +14,18 @@ def fig8(t, x_start, y_start, x_max, y_max, z, yaw_max=0.0):
 
 
 if __name__ == '__main__':
-    traj = Trajectory(TrajectoryType.POLY4D, degree=7)
+    traj = Trajectory(TrajectoryType.POLY4D, degree=5)
     traj.set_start(XYZYaw(0, 0, 0, 0))
     traj.add_goto(XYZYaw(1, 1, 1, 270), 5)
     traj.add_goto(XYZYaw(0, 2, 1, -45), 5)
-    # t = np.linspace(0, 25, 6000)
-    # t_x_y_z_yaw = fig8(t, 0, -0.5, 0.5, 0.2, 0.5, np.pi)
-    # pickle_filename = select_file("pickle")
     pickle_filename = "traj.pickle"
     t_x_y_z_yaw, parameters = evaluate_pickle(pickle_filename)
+
     traj.add_goto(XYZYaw(x=t_x_y_z_yaw[1][0],
                          y=t_x_y_z_yaw[2][0],
                          z=t_x_y_z_yaw[3][0],
                          yaw=t_x_y_z_yaw[4][0]), 5)
-    traj.add_interpolated_traj(t_x_y_z_yaw, 50, method="lsqspline")
+    traj.add_interpolated_traj(t_x_y_z_yaw, 50, method="mosek", fit_ends=True, force_0_derivs=True)
     traj.add_goto(XYZYaw(0, 0, 0, 0), 5)
     traj.parameters = [[-100, "stabilizer.controller", 2],
                        [-5, "stabilizer.controller", 1],

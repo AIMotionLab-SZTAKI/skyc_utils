@@ -5,16 +5,19 @@ import json
 import time
 from functools import partial
 from dataclasses import dataclass
+import struct
+
+CAR_DELAY = 5.0
 
 
 def warning(text: str):
-    color = "\033[33m"
+    color = "\033[91m"
     reset = "\033[0m"
     print(f"{color}[{time.time()-start_time:.3f} WARNING] {text}{reset}")
 
 
 def log(text: str):
-    color = "\033[36m"
+    color = "\033[97m"
     reset = "\033[0m"
     print(f"{color}[{time.time() - start_time:.3f} LOG] {text}{reset}")
 
@@ -24,7 +27,7 @@ class TcpPort:
     """Convenience class to package all data relating to a TCP port maintained by the server. A port has a number,
     an informal name (corresponding to the same in skybrushd.jsonc), a function that gets called when a client
     connects to it, and a list of the streams connected to it."""
-    port: int
+    num: int
     name: str
     func: Callable
     streams: List[trio.SocketStream]
@@ -41,7 +44,21 @@ class DroneHandler:
 
     def print(self, text):
         reset_color = "\033[0m"
-        print(f"{self.color}[drone_{self.uav_id}]: {text}{reset_color}")
+        print(f"{self.color}[{time.time() - start_time:.3f} drone_{self.uav_id}]: {text}{reset_color}")
+
+    @staticmethod
+    def get_traj_type(self, arg: bytes) -> Tuple[bool, Union[bool, None]]:
+        # trajectories can either be relative or absolute. This is determined by a string/bytes, but only these two
+        # values are allowed. The return tuple tells whether the argument is valid (first part) and if it's
+        # relative (second part). If it wasn't valid, we just get None for the second part.
+        traj_type_lower = arg.lower()  # Bit of an allowance to not be case sensitive
+        # TODO: investigate whether the trajectory starts from the drone's current location
+        if traj_type_lower == b'relative' or traj_type_lower == b'rel':
+            return True, True
+        elif traj_type_lower == b'absolute' or traj_type_lower == b'abs':
+            return True, False
+        else:
+            return False, None
 
     async def takeoff(self, arg: bytes):
         try:
@@ -78,7 +95,7 @@ class DroneHandler:
         await self.handle_transmission()
         trajectory_data = json.loads(self.traj.decode('utf-8'))
         f"Defined trajectory of length {trajectory_data.get('landingTime')} sec for drone {self.uav_id}"
-        # await sleep(0.5)
+        await sleep(1)
         await self.stream.send_all(b'ACK')  # reply with an acknowledgement
 
     async def start(self, arg: bytes):
@@ -153,6 +170,14 @@ class DroneHandler:
         return command, argument
 
 
+async def _notify_port(port: TcpPort, msg: bytes):
+    try:
+        for stream in port.streams:
+            await stream.send_all(msg)
+    except Exception as exc:
+        print(f"Exception: {exc!r}")
+
+
 class Server:
     """put stuff here that would be here in the server: mimic as closely as possible"""
     def __init__(self, object_registry: List[str]):
@@ -161,26 +186,43 @@ class Server:
         self.PORT = 7000
         self.car_streams: List[trio.SocketStream] = []
         self.simulation_streams: List[trio.SocketStream] = []
-        self.colors = {"04": "\033[92m",
-                       "06": "\033[93m",
-                       "07": "\033[94m",
-                       "08": "\033[96m",
-                       "09": "\033[95m"}
+        self.colors = {"01": "\033[92m",
+                       "02": "\033[93m",
+                       "03": "\033[94m",
+                       "04": "\033[95m",
+                       "05": "\033[96m",
+                       "06": "\033[32m",
+                       "07": "\033[33m",
+                       "08": "\033[34m",
+                       "09": "\033[35m"}
         # this would be read from skybrushd.jsonc:
         self.tcp_port_dict = {"drone": 7000,
                               "car": 7001,
                               "sim": 7002,
                               "lqr": 7003}
         self.ports: Dict[int, TcpPort] = {}
+        self.event_notifications: Dict[str, Dict[int, bytes]] = {}
+        self.nursery: Optional[trio.Nursery] = None
+
+    def register_event_notification(self, event: str, port: Union[str, int], msg: bytes):
+        try:
+            if isinstance(port, str):  # port was given as string -> look up its port number
+                port = self.tcp_port_dict[port]
+        except KeyError:
+            warning(f"Tried to assign event to non-existent port.")
+        if event not in self.event_notifications:  # first time this event is mentioned -> register the event
+            self.event_notifications[event] = {port: msg}
+        else:
+            self.event_notifications[event][port] = msg
 
     def _set_port_func(self, port_name: str, func: Callable):
         try:
             port_num = self.tcp_port_dict[port_name]
             if port_num in self.ports:  # means we need to save its streams
                 streams: List[trio.SocketStream] = self.ports[port_num].streams
-                self.ports[port_num] = TcpPort(port=port_num, name=port_name, func=func, streams=streams)
+                self.ports[port_num] = TcpPort(num=port_num, name=port_name, func=func, streams=streams)
             else:
-                self.ports[port_num] = TcpPort(port=port_num, name=port_name, func=func, streams=[])
+                self.ports[port_num] = TcpPort(num=port_num, name=port_name, func=func, streams=[])
         except KeyError:
             warning(f"No such port in configuration: {port_name}")
 
@@ -201,7 +243,7 @@ class Server:
             if 'REQ_' in request:
                 requested_id = request.split('REQ_')[1]
                 if requested_id not in available_ids:
-                    warning(f"The requested ID isn't available.")
+                    warning(f"The requested ID ({requested_id}) isn't available.")
                     await drone_stream.send_all(b'ACK_00')
                     return
             else:
@@ -248,29 +290,35 @@ class Server:
         self._set_port_func("drone", self.establish_drone_handler)
         self._set_port_func("car", self.broadcast)
         self._set_port_func("sim", self.broadcast)
-        #  self._set_port_func("lqr", self.stream_lqr_to_cf)
+        self.register_event_notification("show:start", "car", struct.pack("f", CAR_DELAY))
+
+    async def _on_show_start(self):
+        log("SHOW STARTED")
+        for port_num, msg in self.event_notifications["show:start"].items():
+            port = self.ports[port_num]
+            await _notify_port(port, msg)
+
+    async def wait_show_start(self):
+        while True:
+            start = await trio.to_thread.run_sync(input, 'Type "start" to send a show start signal!\n')
+            if start.lower() != "start":
+                warning("Mistyped start signal!")
+            else:
+                await self._on_show_start()
+                await sleep(CAR_DELAY)
 
     async def run(self):
         async with trio.open_nursery() as nursery:
+            self.nursery = nursery
             for port_num, tcp_port in self.ports.items():
                 handler = partial(tcp_port.func, port=port_num)
                 nursery.start_soon(partial(trio.serve_tcp, handler=handler, port=port_num, handler_nursery=nursery))
-        start = None
-        while start != "start":
-            start = await trio.to_thread.run_sync(input, 'Type "start" to simulate a skyc start!\n')
-        try:
-            for stream in self.car_streams:
-                print("STARTING CAR WROOM WROOM")
-                await stream.send_all(b'6')
-            for stream in self.simulation_streams:
-                print("START SIMULATION!")
-                await stream.send_all(b'00_CMDSTART_show_EOF')
-        except Exception as exc:
-            print(f"Exception: {exc!r}")
+            nursery.start_soon(self.wait_show_start)
+        self.nursery = None
 
 
 if __name__ == "__main__":
-    DummyServer = Server(object_registry=["01", "02", "06", "07", "08", "09"])
+    DummyServer = Server(object_registry=["01", "02", "03", "04", "05", "06", "07", "08", "09"])
     DummyServer.configure()  # in ctor?
     start_time = time.time()
     log("DUMMY SERVER READY! :)")
