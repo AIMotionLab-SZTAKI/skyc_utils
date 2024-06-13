@@ -4,14 +4,16 @@ from functools import partial
 from typing import List, Optional, Union, Any, Tuple
 import os
 import shutil
-
-import matplotlib.pyplot as plt
 from scipy.interpolate import splev, splrep, PPoly
 from scipy import interpolate as interpolate
 import numpy as np
 import math
-from copy import deepcopy
 from .optimal_trajectory import find_optimal_poly
+import trio
+from typing import Union, List
+from trio import Event, current_time
+import re
+from queue import PriorityQueue
 
 
 def is_num(var):
@@ -283,3 +285,119 @@ def extend_ppoly_coeffs(ppoly: PPoly, coeff_num: int):
     if ppoly_deg < coeff_num:
         zeros_shape = (coeff_num - ppoly_deg, ppoly.c.shape[1])
         ppoly.c = np.vstack((np.zeros(zeros_shape), ppoly.c))
+
+PRIORITY_HIGH = 1
+PRIORITY_MID = 2
+PRIORITY_LOW = 3
+
+
+class PrioEvent:
+    """A class that has wait() and set() like trio.Event, but is comparable. Here, a subclass would be the obvious
+    solution, instead of this. However, trio.Event doesn't allow subclassing."""
+
+    def __init__(self, priority: int):
+        self.event = Event()
+        self.priority = priority
+
+    async def wait(self) -> None:
+        await self.event.wait()
+
+    def set(self) -> None:
+        self.event.set()
+
+    def __lt__(self, other) -> bool:
+        return self.priority < other.priority
+
+
+class Semaphore:
+    """
+    Class that implements resource guarding. A trio asynchronous process may call wait_take() with
+    a given priority in order to attempt to take command of the resource. If the resource is
+    available, it gets taken, else the process will stand in a priority queue where the highest
+    priority is given the right of way. Among processes that stood in queue with the same priority,
+    this functions as a fifo. Once the process is done, it may let go with let_go(), at which point
+    the next highest priority in queue may take the resource.
+    """
+    def __init__(self):
+        self.taken = False
+        self.queue = PriorityQueue()
+
+    async def wait_take(self, priority: int) -> None:
+        if not self.taken:
+            self.taken = True
+        else:
+            ticket = PrioEvent(priority)
+            self.queue.put(ticket)
+            await ticket.wait()
+
+    def let_go(self) -> None:  # make async? idk
+        if self.queue.empty():
+            self.taken = False
+        else:
+            ticket: PrioEvent = self.queue.get()
+            ticket.set()
+
+
+def warning(text: str) -> None:
+    """
+    Print stuff in scary red letters.
+    """
+    red = "\033[91m"
+    reset = "\033[0m"
+    formatted_text = f"WARNING: {text}"
+    print(red + formatted_text + reset)
+
+
+def determine_id(string: str) -> Union[None, str]:
+    """
+    takes a name as found in optitrack and returns the ID found in it, for example cf6 -> 06
+    """
+    number_match = re.search(r'\d+', string)
+    if number_match:
+        number = number_match.group(0)
+        if len(number) == 1:
+            number = '0' + number
+        return number
+    return None
+
+
+async def establish_connection_with_handler(drone_id: str, port: int, ip):
+    """ Attempts to connect to the skybrush server at the given ip and port, expecting the regular
+     initialization steps for a drone handler. """
+    drone_stream: trio.SocketStream = await trio.open_tcp_stream("127.0.0.1", port)
+    request = f"REQ_{drone_id}"
+    print(f"Requesting handler for drone {drone_id}")
+    await drone_stream.send_all(request.encode('utf-8'))
+    acknowledgement: bytes = await drone_stream.receive_some()
+    if acknowledgement.decode('utf-8') == f"ACK_{drone_id}":
+        print(f"successfully created server-side handler for drone {drone_id}")
+        return drone_stream
+    else:
+        raise RuntimeError  # immediately stop if we couldn't reach one of the drones
+
+
+def display_time():
+    """returns the time since it was first called, in order to make time.time() more usable, since time.time() is
+    a big number"""
+    if not hasattr(display_time, 'start_time'):
+        display_time.start_time = current_time()
+    return current_time() - display_time.start_time
+
+
+async def send_with_semaphore(data: bytes, semaphore: Semaphore, stream: trio.SocketStream, wait_ack: bool, timeout=2):
+    """
+    Waits for the given semaphore (which should be associated with the stream) to be available, then sends the data over
+    the stream and waits for an acknowledgement. Raises a timeout error if the operations took too long.
+    """
+    await semaphore.wait_take(PRIORITY_HIGH)
+    assert stream is not None
+    with trio.move_on_after(timeout) as cancel_scope:
+        await stream.send_all(data)
+        if wait_ack:
+            ack = await stream.receive_some()
+            assert ack.endswith(b"ACK")
+    if cancel_scope.cancelled_caught:
+        raise TimeoutError
+    semaphore.let_go()
+
+
