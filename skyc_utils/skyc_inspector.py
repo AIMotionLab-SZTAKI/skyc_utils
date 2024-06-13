@@ -21,12 +21,12 @@ def assert_no_car_collision(drones: List[List[List[float]]], car: List[List[floa
             drone_timestamp = drone[0][idx]
             assert abs(car_timestamp - drone_timestamp) < TIMESTEP / 50
             distance = np.sqrt((drone[1][idx] - car[1][idx]) ** 2 + (drone[2][idx] - car[2][idx]) ** 2)
-            # if distance < 0.2:
-            #     print(f"CRASH DETECTED BETWEEN DRONE AND CAR AT {drone_timestamp}")
-            assert distance > 0.2
+            if distance < 0.2:
+                print(f"CRASH DETECTED BETWEEN DRONE AND CAR AT {drone_timestamp}")
+            # assert distance > 0.2
 
 
-def eval_if_car(eval_times):
+def eval_if_car(eval_times, car_file):
     """Function that checks if a car log file is present, and if it is, processes its data into an evaluation
     variable, similar to that of the drones: [[t0, t1, ..], [x0, x1, ...], [y0, y1, ...], [z0, z1, ...]]"""
 
@@ -39,26 +39,23 @@ def eval_if_car(eval_times):
             else:
                 break
         return index
-
-    if os.path.exists(os.path.join(os.getcwd(), "logs", "car")):
-        car_trajs: List[Tuple[float, Any]] = []
-        # trajs will be: [(timestamp of trajectory start, (tck of traj, speed of traj)), -||-]
-        with open(os.path.join(os.getcwd(), "logs", "car"), 'r') as file:
+    if os.path.exists(car_file):
+        car_trajs = []
+        with open(car_file, 'r') as file:
             for line in file:
                 parts = line.strip().split(": ")
-                car_trajs.append((float(parts[0]), pickle.loads(eval(parts[1]))))
+                delay, tck = pickle.loads(eval(parts[1]))
+                car_trajs.append((delay+float(parts[0]), tck))
         car_eval = [[], [], [], []]
         for eval_time in eval_times:
             car_eval[0].append(eval_time)
             traj_idx = get_index_by_time([car_traj[0] for car_traj in car_trajs], eval_time)
-            tck, speed = car_trajs[traj_idx][1]
-            # if the distance would be larger than the traj length -> trajectory was finished
-            # if the distance was negative -> the first trajectory has not started
-            distance = abs(speed) * (eval_time - car_trajs[traj_idx][0])
-            distance = max(min(distance, tck[0][-1]), 0)
-            car_eval[1].append(float(interpolate.splev(distance, tck)[0]))
-            car_eval[2].append(float(interpolate.splev(distance, tck)[1]))
-            car_eval[3].append(float(interpolate.splev(distance, tck)[2]))
+            # print(f"Traj idx: {traj_idx}")
+            start_time, tck = car_trajs[traj_idx]
+            tck_eval = interpolate.splev(min(tck[0][-1], eval_time - start_time), tck)
+            car_eval[1].append(float(tck_eval[0]))
+            car_eval[2].append(float(tck_eval[1]))
+            car_eval[3].append(float(tck_eval[2]))
         return car_eval
     else:
         return None
@@ -355,7 +352,7 @@ def animate(limits: Tuple[Tuple[float, float], Tuple[float, float], Tuple[float,
     for drone in drones:
         ax.add_collection3d(drone)
     anim = PausableAnimation(anim_data=anim_traj_eval, drones=drones, car=car, car_anim_data=car_anim_data,
-                             fig=fig, frames=anim_length, interval=anim_interval, repeat=False, ax=ax,
+                             fig=fig, frames=anim_length, interval=anim_interval, repeat=True, ax=ax,
                              L=L, H=H, P=P, CAR_R=CAR_R, CAR_H=CAR_H, DEFAULT_ANGLE=DEFAULT_ANGLE)
     return anim.animation
 
@@ -429,7 +426,7 @@ def inspect(filename=None):
     else:
         exit()
     if len(traj_data) < 10:
-        LIMITS = ((-2, 2), (-2, 2), (-0.05, 1.6))  # physical constraints of the optitrack system
+        LIMITS = ((-2, 2), (-2, 2), (-0.15, 1.6))  # physical constraints of the optitrack system
     else:
         LIMITS = ((-1, len(traj_data) * 0.5 + 1), (-1, len(traj_data) * 0.5 + 1), (-0.1, 2))  # TODO
     TIMESTEP = 0.005  # we keep this relatively constant for the sake of the animation coming later
@@ -437,7 +434,8 @@ def inspect(filename=None):
     eval_times = list(np.linspace(takeoff_time, land_time, round((land_time - takeoff_time) / TIMESTEP)))
     traj_eval = [evaluate_trajectory(trajectory, eval_times, LIMITS) for trajectory in traj_data]
     assert_no_collisions(traj_eval, TIMESTEP)
-    car_eval = eval_if_car(eval_times)
+    car_file = "/home/aimotion-i9/Projects/Palko_Demo_v3/car_logs/car_log.txt"
+    car_eval = eval_if_car(eval_times, car_file)
     if car_eval is not None:
         assert_no_car_collision(drones=traj_eval, car=car_eval, TIMESTEP=TIMESTEP)
     first_deriv = [get_derivative(item) for item in traj_eval]

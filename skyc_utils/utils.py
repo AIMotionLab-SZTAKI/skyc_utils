@@ -121,6 +121,7 @@ def derivatives(values: List[float], times: List[float], n: int, eval_at: list[f
     deriv = [splev(eval_at, spline, der=i) for i in range(n+1)]
     return deriv
 
+
 def duplicate_end_knots(knots, degree):
     knots = np.r_[(knots[0],) * degree, knots, (knots[-1],) * degree]
     return knots
@@ -210,7 +211,7 @@ def fit_ppoly_mosek(t_x_y_z_yaw: List[List[float]], knots, degree: int, *,
     force_0_derivs: whether to force the start and end derivatives to be 0
     """
     t, _, _, _, _ = t_x_y_z_yaw
-    bspline_lst = [interpolate.splrep(t, values, k=degree) for values in t_x_y_z_yaw[1:]]
+    bspline_lst = [interpolate.splrep(t, values, k=min(degree, 5)) for values in t_x_y_z_yaw[1:]]
     x, y, z, yaw = [interpolate.splev(knots, bspline) for bspline in bspline_lst]
     vel = [[knots[0], 0, 0, 0, 0]] + (len(knots) - 2) * [None] + [[knots[-1], 0, 0, 0, 0]]
     acc = [[knots[0], 0, 0, 0, 0]] + (len(knots) - 2) * [None] + [[knots[-1], 0, 0, 0, 0]]
