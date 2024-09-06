@@ -12,6 +12,7 @@ from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import pickle
 from skyc_utils.utils import select_file, cleanup
+from scipy.interpolate import BPoly
 
 
 def assert_no_car_collision(drones: List[List[List[float]]], car: List[List[float]], TIMESTEP):
@@ -210,36 +211,6 @@ def evaluate_segment(points: List[List[float]], start_time: float, end_time: flo
     return tuple(retval)
 
 
-def evaluate_trajectory(trajectory: dict, times: List[float], LIMITS) -> List[List[float]]:
-    '''Function that looks at which bezier curve each timestamp falls into, then evaluates the curve at that
-    timestamp, and returns the result for each timestamp.'''
-    segments = trajectory.get("points")
-    assert segments is not None
-    eval = []
-    for t in times:
-        # check which segment the current timestamp falls into
-        i = bisect.bisect_left([segment[0] for segment in segments], t)
-        if i == 0:
-            eval.append(tuple([segments[0][0]] + segments[0][1]))
-        elif i == len(segments):
-            eval.append(tuple([segments[-1][0]] + segments[-1][1]))
-        else:
-            prev_segment = segments[i - 1]
-            start_point = prev_segment[1]
-            start_time = prev_segment[0]
-            segment = segments[i]
-            end_point = segment[1]
-            end_time = segment[0]
-            ctrl_points = segment[2]
-            # points will contain all points of the bezier curve, including the start and end, unlike in trajectory.json
-            points = [start_point, *ctrl_points, end_point] if ctrl_points else [start_point, end_point]
-            eval.append(evaluate_segment(points, start_time, end_time, t, trajectory.get("has_yaw", False), LIMITS))
-    # 'Flip' the dimensions of eval. Currently it's a list of tuples, with each tuple containing x,y,z,yaw, but later on
-    # it will be easier to work with it if we return it as a list of lists, so that t=eval[0], x=eval[1] and so on
-    eval = [list(item) for item in zip(*eval)]
-    return eval
-
-
 def get_derivative(txyz_yaw: List[List[float]]) -> List[List[float]]:
     '''Function that takes a list of coordinates with timestamps and calculates their derivatives. Returns a
     List[List[float]] of the same dimension as the input, where the first timestamps' derivatives are the same as the
@@ -415,8 +386,124 @@ def plot_data(traj_eval: List[List[List[float]]],
             subplots[2, idx].legend(fontsize=10)
     fig.subplots_adjust(hspace=0.4)
 
+class BezierCurve:
+    """
+    Convenience class to encapsulate a single bezier curve (as opposed to a series of bezier curves like in a skyc file).
+    """
+    def __init__(self, points: list[float], start_time: float, end_time: float):
+        self.points: list[float] = points  #: The control points of the curve (the coefficients).
+        self.start_time: float = start_time  #: The start of the curve.
+        self.end_time: float = end_time  #: The end of the curve.
+        coeffs: list[tuple[float, ...]] = list(zip(*points))  #: This is equivalent to transposing the matrix formed by the points.
+        self.BPolys: list[BPoly] = [BPoly(np.array(coeffs).reshape(len(coeffs), 1), np.array([start_time, end_time]))
+                                    for coeffs in coeffs]  #: The interpolate.BPoly objects formed from the points.
 
-def inspect(filename=None):
+    def x(self, time: float, nu: int = 0) -> np.ndarray:
+        """
+        Wrapper around the __call__ function of the appropriate BPoly object; it evaluates the x Bezier Polynomial.
+
+        Args:
+            time (float): The timestamp at which to evaluate.
+            nu (int): The number of derivative to evaluate.
+
+        Returns:
+            np.ndarray: The "nu"th derivative at "time" time.
+        """
+        return self.BPolys[0](time, nu)
+
+    def y(self, time: float, nu: int = 0) -> np.ndarray:
+        """
+        Wrapper around the __call__ function of the appropriate BPoly object; it evaluates the y Bezier Polynomial.
+
+        Args:
+            time (float): The timestamp at which to evaluate.
+            nu (int): The number of derivative to evaluate.
+
+        Returns:
+            np.ndarray: The "nu"th derivative at "time" time.
+        """
+        return self.BPolys[1](time, nu)
+
+    def z(self, time: float, nu: int = 0) -> np.ndarray:
+        """
+        Wrapper around the __call__ function of the appropriate BPoly object; it evaluates the z Bezier Polynomial.
+
+        Args:
+            time (float): The timestamp at which to evaluate.
+            nu (int): The number of derivative to evaluate.
+
+        Returns:
+            np.ndarray: The "nu"th derivative at "time" time.
+        """
+        return self.BPolys[2](time, nu)
+
+    def yaw(self, time: float, nu: int = 0) -> np.ndarray:
+        """
+        Wrapper around the __call__ function of the appropriate BPoly object; it evaluates the yaw Bezier Polynomial.
+
+        Args:
+            time (float): The timestamp at which to evaluate.
+            nu (int): The number of derivative to evaluate.
+
+        Returns:
+            np.ndarray: The "nu"th derivative at "time" time.
+        """
+        return self.BPolys[3](time, nu)
+
+class TrajEvaluator:
+    def __init__(self, traj_data: dict):
+        self.traj_data = traj_data  #: The dictionary that can be read from trajectory.json.
+        self.bezier_curves: list[BezierCurve] = []  #: The list of individual segments.
+        segments = self.traj_data.get("points")
+        assert segments is not None
+        for i in range(1, len(segments)):
+            prev_segment = segments[i - 1]
+            start_point = prev_segment[1]  # The current segment's start pose is the end pose of the previous one.
+            start_time = prev_segment[0]  # The current segment starts when the previous ends.
+            segment = segments[i]
+            end_point = segment[1]
+            end_time = segment[0]
+            ctrl_points = segment[2]  # The "extra" control points, which aren't physically on the curve.
+            # points will contain all points of the bezier curve, including the start and end, unlike in trajectory.json
+            points = [start_point, *ctrl_points, end_point] if ctrl_points else [start_point, end_point]
+            self.bezier_curves.append(BezierCurve(points, start_time, end_time))
+
+    def select_curve(self, time: float) -> BezierCurve:
+        """
+        Calculates which Bezier segment the timestamp falls under.
+
+        Args:
+            time (float): The time at which we're investigating the trajectory.
+
+        Returns:
+            BezierCurve: The segment which will be traversed at the given timestamp.
+        """
+        if time < self.traj_data["takeoffTime"]:  # this should never happen, but in case it does we return the 0th
+            return self.bezier_curves[0]
+        # This loop breaks if we find a match, meaning that it relies on the segments being sorted in increasing
+        # timestamp order.
+        for bezier_curve in self.bezier_curves:
+            if bezier_curve.start_time <= time <= bezier_curve.end_time:
+                return bezier_curve
+        return self.bezier_curves[-1]
+
+    def evaluate(self, times: list[float]) -> list[list[float]]:
+        '''Function that looks at which bezier curve each timestamp falls into, then evaluates the curve at that
+        timestamp, and returns the result for each timestamp.
+        The return will be a list of length 5, where each subelement is also a list.
+        The first list is the timestamps.
+        The second list is the x positions.
+        The third is the y positions; etc.
+        '''
+        ret: list[list[float]] = []
+        for time in times:
+            curve = self.select_curve(time)
+            ret.append([time, float(curve.x(time)), float(curve.y(time)), float(curve.z(time)), float(curve.yaw(time))])
+        ret = [list(item) for item in zip(*ret)]
+        return ret
+
+
+def inspect(filename=None, car_file=None):
     if filename is None:
         SKYC_FILE: Union[str, None] = select_file("skyc")
     else:
@@ -431,11 +518,13 @@ def inspect(filename=None):
         LIMITS = ((-1, len(traj_data) * 0.5 + 1), (-1, len(traj_data) * 0.5 + 1), (-0.1, 2))  # TODO
     TIMESTEP = 0.005  # we keep this relatively constant for the sake of the animation coming later
     takeoff_time, land_time = extend_takeoff_land(traj_data)  # make every trajectory start and end at the same time
+
+    evaluators = [TrajEvaluator(d) for d in traj_data]
     eval_times = list(np.linspace(takeoff_time, land_time, round((land_time - takeoff_time) / TIMESTEP)))
-    traj_eval = [evaluate_trajectory(trajectory, eval_times, LIMITS) for trajectory in traj_data]
+    traj_eval = [evaluator.evaluate(eval_times) for evaluator in evaluators]
     assert_no_collisions(traj_eval, TIMESTEP)
-    car_file = "/home/aimotion-i9/Projects/Palko_Demo_v3/car_logs/car_log.txt"
-    car_eval = eval_if_car(eval_times, car_file)
+    # car_file = "/home/aimotion-i9/Projects/Palko_Demo_v3/car_logs/car_log.txt"
+    car_eval = eval_if_car(eval_times, car_file) if car_file is not None else None
     if car_eval is not None:
         assert_no_car_collision(drones=traj_eval, car=car_eval, TIMESTEP=TIMESTEP)
     first_deriv = [get_derivative(item) for item in traj_eval]

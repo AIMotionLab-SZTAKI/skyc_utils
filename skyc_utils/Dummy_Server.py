@@ -7,7 +7,7 @@ from functools import partial
 from dataclasses import dataclass
 import struct
 
-CAR_DELAY = 5.0
+CAR_DELAY = 5.5
 
 
 def warning(text: str):
