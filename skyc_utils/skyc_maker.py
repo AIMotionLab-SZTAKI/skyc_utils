@@ -271,6 +271,12 @@ class Trajectory:
         writing the parameters in traj.parameters in the wrong order (such as parameter, value, time)."""
         self.parameters.append([t, param, value])
 
+    def add_lqr_params(self, lqr_params: List[int], bounds: List[float], LQR_N=240):
+        assert len(lqr_params) == LQR_N * 64
+        assert len(bounds) == 128
+        self.lqr_params["K"] = lqr_params
+        self.lqr_params["bounds"] = bounds
+
 
 def write_skyc(trajectories: List[Trajectory], name=sys.argv[0][:-3]):
     """
