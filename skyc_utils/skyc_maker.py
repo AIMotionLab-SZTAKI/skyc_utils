@@ -111,6 +111,8 @@ class Trajectory:
         # representation by the function self.set_bezier_repr
         self.bezier_repr: Optional[List] = None
 
+        self.lqr_params: Dict[str, List[Union[float, int]]] = {}
+
     @property
     def end_condition(self) -> Tuple[XYZYaw, XYZYaw]:
         """
@@ -260,6 +262,7 @@ class Trajectory:
             "landingTime": self.bezier_repr[-1][0],
             "type": self.type.value
         }
+        json_dict = json_dict | self.lqr_params
         json_object = json.dumps(json_dict, indent=2)
         if write_file:
             with open("trajectory.json", "w") as f:
