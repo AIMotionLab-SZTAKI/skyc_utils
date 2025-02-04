@@ -1,6 +1,5 @@
 import json
 import math
-
 import matplotlib.pyplot as plt
 from scipy import interpolate as interpolate  # !
 from scipy.interpolate import PPoly
@@ -9,11 +8,69 @@ import numpy as np  # !
 import os
 import shutil
 import zipfile
-from typing import List, Optional, Any, Union, Sequence, Tuple
-from dataclasses import dataclass
+from typing import List, Optional, Any, Union, Sequence, Tuple, ClassVar
 import pickle
 from skyc_utils.utils import *
 from enum import Enum
+from pyledctrl.compiler.compiler import BytecodeCompiler
+from pyledctrl.compiler.formats import InputFormat
+
+class Color:
+    """
+    Class to describe an RGB color. The standard RGB and CMY and White/Black colors are provided as class variables.
+    """
+    BLACK: ClassVar["Color"]
+    RED: ClassVar["Color"]
+    GREEN: ClassVar["Color"]
+    BLUE: ClassVar["Color"]
+    YELLOW: ClassVar["Color"]
+    CYAN: ClassVar["Color"]
+    MAGENTA: ClassVar["Color"]
+    WHITE: ClassVar["Color"]
+
+    def __init__(self, r: int, g: int, b: int):
+        if not (0 <= r <= 255 and 0 <= g <= 255 and 0 <= b <= 255):
+            raise ValueError("r, g, and b must be in the range 0-255")
+        self.r: int = r
+        self.g: int = g
+        self.b: int = b
+
+    def __repr__(self):
+        return f"{self.r}, {self.g}, {self.b}"
+
+Color.BLACK = Color(0, 0, 0)
+Color.RED = Color(255, 0, 0)
+Color.GREEN = Color(0, 255, 0)
+Color.BLUE = Color(0, 0, 255)
+Color.YELLOW = Color(255, 255, 0)
+Color.CYAN = Color(0, 255, 255)
+Color.MAGENTA = Color(255, 0, 255)
+Color.WHITE = Color(255, 255, 255)
+
+class LightProgram:
+    """
+    A light program can be described in a .led file, which is basically source code from which a BytecodeCompiler
+    in the pyledctrl package can compile a light program byte string. This is the format in which skyc files expect
+    light programs to be.
+    """
+    def __init__(self):
+        self.source: bytes = b""
+
+    def set_color(self, color: Color, duration: float):
+        """
+        Append a color for a duration to the light program.
+        """
+        self.source = self.source + bytes(f"set_color({color}, duration={duration})\n", "utf-8")
+
+    def export_json(self):
+        """
+        Write the light program to a json file.
+        """
+        compiler = BytecodeCompiler()
+        compiler.compile(input=self.source, output_file="lights.json", input_format=InputFormat.LEDCTRL_SOURCE)
+
+DEFAULT_LIGHT_PROGRAM = LightProgram()
+DEFAULT_LIGHT_PROGRAM.set_color(Color.BLACK, 600)
 
 
 class XYZYaw:
@@ -111,7 +168,7 @@ class Trajectory:
         # representation by the function self.set_bezier_repr
         self.bezier_repr: Optional[List] = None
 
-        self.lqr_params: Dict[str, List[Union[float, int]]] = {}
+        self.lqr_params: dict[str, List[Union[float, int]]] = {}
 
     @property
     def end_condition(self) -> Tuple[XYZYaw, XYZYaw]:
@@ -281,27 +338,36 @@ class Trajectory:
         self.lqr_params["bounds"] = bounds
 
 
-def write_skyc(trajectories: List[Trajectory], name=sys.argv[0][:-3]):
+def write_skyc(trajectories: list[Trajectory], light_programs: Optional[list[LightProgram]] = None,
+               name=sys.argv[0][:-3]):
     """
-    Constructs a skyc file from the provided trajectory, with the given name.
+    Constructs a skyc file from the provided trajectory, and optionally given lights with the given name.
     """
     cleanup(files=["show.json",
                    "cues.json",
                    f"{name}.zip",
                    f"{name}.skyc",
-                   "trajectory.json"],
+                   "trajectory.json"
+                   "lights.json"],
             folders=["drones"])
+    if not (light_programs is None or len(light_programs) == len(trajectories)):
+        raise ValueError("If light programs are provided, their number must equal the number of trajectories!")
     # Create the 'drones' folder if it doesn't already exist
     os.makedirs('drones', exist_ok=True)
     drones = []
     for index, traj in enumerate(trajectories):
         traj.export_json()
+        if light_programs is None: # if no light program was provided, use a default black program
+            DEFAULT_LIGHT_PROGRAM.export_json()
+        else:
+            light_programs[index].export_json()
         assert traj.bezier_repr is not None
         Data = traj.bezier_repr
         parameters = traj.parameters
         # The trajectory is saved to a json file with the data below
         drone_settings = {
             "trajectory": {"$ref": f"./drones/drone_{index}/trajectory.json#"},
+            "lights": {"$ref": f"./drones/drone_{index}/lights.json#"},
             "home": Data[0][1][0:3],
             "startYaw": Data[0][1][-1],
             "landAt": Data[-1][1][0:3],
@@ -320,6 +386,7 @@ def write_skyc(trajectories: List[Trajectory], name=sys.argv[0][:-3]):
         drone_folder = os.path.join('drones', f'drone_{index}')
         os.makedirs(drone_folder, exist_ok=True)
         shutil.move('trajectory.json', drone_folder)
+        shutil.move('lights.json', drone_folder)
     # This wall of text below is just overhead that is required to make a skyc file.
     ########################################CUES.JSON########################################
     items = [{"time": 0.0,
@@ -382,7 +449,8 @@ def write_skyc(trajectories: List[Trajectory], name=sys.argv[0][:-3]):
     cleanup(files=["show.json",
                    "cues.json",
                    f"{name}.zip",
-                   "trajectory.json"],
+                   "trajectory.json",
+                   "lights.json"],
             folders=["drones"])
     print(f"{name}.skyc ready!")
 

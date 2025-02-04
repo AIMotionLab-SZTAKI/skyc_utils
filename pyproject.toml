@@ -11,6 +11,7 @@ dependencies = ["matplotlib",
                 "scipy",
                 "trio",
                 "casadi",
-                "mosek"]
+                "mosek",
+                "pyledctrl @ git+https://github.com/skybrush-io/pyledctrl.git"]
 description = "Repository for storing scripts, classes and functions useful for aimotionlab cf drones."
 readme = "readme.md"

@@ -1,0 +1,6 @@
+set_color(255, 255, 0, duration=3)
+set_color("white", duration=3)
+set_color(0, 0, 0, duration=3)
+set_color(255, 0, 255, duration=3)
+set_color("green", duration=3)
+
