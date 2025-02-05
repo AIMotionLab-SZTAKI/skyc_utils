@@ -195,8 +195,8 @@ class Trajectory:
         necessary, since when we do go_to segments, meaning we must have somewhere to go *from* in order to go *to*
         somewhere. Self.start is presumed to be 0, 0, 0, 0 if not set.
         """
-        assert isinstance(start.x, (int, float)) and isinstance(start.y, (int, float)) and \
-               isinstance(start.z, (int, float)) and isinstance(start.yaw, (int, float))
+        assert isinstance(start.x, (int, float, np.number)) and isinstance(start.y, (int, float, np.number)) and \
+               isinstance(start.z, (int, float, np.number)) and isinstance(start.yaw, (int, float, np.number))
         self.start = start
 
     def set_bezier_repr(self):
