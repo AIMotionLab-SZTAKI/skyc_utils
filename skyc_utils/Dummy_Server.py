@@ -290,6 +290,7 @@ class Server:
         self._set_port_func("car", self.broadcast)
         self._set_port_func("sim", self.broadcast)
         self.register_event_notification("show:start", "car", struct.pack("f", CAR_DELAY))
+        self.register_event_notification("show:start", "sim", b"START")
 
     async def _on_show_start(self):
         log("SHOW STARTED")
