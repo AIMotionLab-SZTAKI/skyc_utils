@@ -180,17 +180,22 @@ def get_data(skyc_file: str) -> list[tuple[dict, dict]]:
     drones_folder = os.path.join(folder_name, "drones")  # within it, there should be a 'drones' folder for trajectories
     ret = []
     for root, dirs, files in os.walk(drones_folder):
-        if 'trajectory.json' in files and 'lights.json' in files:
+        if 'trajectory.json' in files:
             with open(os.path.join(root, 'trajectory.json'), 'r') as json_file:
                 data = json.load(json_file)
                 points = data.get("points")
                 assert points is not None
                 data["has_yaw"] = True if len(points[0][1]) == 4 else False  # determine if there is a yaw trajectory
                 traj_data = data
+        else:
+            traj_data = None
+        if 'lights.json' in files:
             with open(os.path.join(root, 'lights.json'), 'r') as json_file:
                 data = json.load(json_file)
                 light_data = data
-            ret.append((traj_data, light_data))
+        else:
+            light_data = None
+        ret.append((traj_data, light_data))
     cleanup(files=[], folders=[folder_name])
     return ret
 
