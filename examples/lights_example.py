@@ -1,4 +1,8 @@
+import os
+import time
+
 from skyc_utils.skyc_maker import Trajectory, XYZYaw, Color, LightProgram, write_skyc
+from skyc_utils.skyc_inspector import get_light_data
 
 if __name__ == '__main__':
     traj = Trajectory()

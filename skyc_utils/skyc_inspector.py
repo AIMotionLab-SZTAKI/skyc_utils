@@ -157,6 +157,17 @@ def get_traj_data(skyc_file: str) -> List[dict]:
     cleanup(files=[], folders=[folder_name])
     return traj_data
 
+def get_light_data(skyc_file: str) -> list[dict]:
+    folder_name = unpack_skyc_file(skyc_file)  # unpack the skyc file (it's like a zip)
+    drones_folder = os.path.join(folder_name, "drones")
+    light_data = []
+    for root, dirs, files in os.walk(drones_folder):
+        if 'lights.json' in files:
+            with open(os.path.join(root, 'lights.json'), 'r') as json_file:
+                data = json.load(json_file)
+                light_data.append(data)
+    cleanup(files=[], folders=[folder_name])
+    return light_data
 
 def extend_takeoff_land(traj_data: List[dict]) -> Tuple[float, float]:
     '''Function that takes the trajectories and adds a segment to their end or start, so that they start and end at
