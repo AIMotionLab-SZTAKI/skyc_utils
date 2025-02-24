@@ -14,6 +14,7 @@ from skyc_utils.utils import *
 from enum import Enum
 from pyledctrl.compiler.compiler import BytecodeCompiler
 from pyledctrl.compiler.formats import InputFormat
+from pyledctrl.compiler.formats import OutputFormat
 
 class Color:
     """
@@ -55,22 +56,32 @@ class LightProgram:
     """
     def __init__(self):
         self.source: bytes = b""
+        self.colors: list[list[Union[str, float]]] = []
 
-    def set_color(self, color: Color, duration: float):
+    def append_color(self, color: Color, duration: float):
         """
         Append a color for a duration to the light program.
         """
         self.source = self.source + bytes(f"set_color({color}, duration={duration})\n", "utf-8")
+        self.colors.append([color.__repr__(), duration])
 
     def export_json(self):
         """
         Write the light program to a json file.
         """
         compiler = BytecodeCompiler()
-        compiler.compile(input=self.source, output_file="lights.json", input_format=InputFormat.LEDCTRL_SOURCE)
+        output = compiler.compile(input=self.source, input_format=InputFormat.LEDCTRL_SOURCE,
+                                  output_format=OutputFormat.LEDCTRL_JSON)[0]
+        json_dict = json.loads(output.decode('ascii'))
+        json_dict["colors"] = self.colors
+        json_object = json.dumps(json_dict, indent=2)
+        with open("lights.json", "w") as f:
+            f.write(json_object)
+
+
 
 DEFAULT_LIGHT_PROGRAM = LightProgram()
-DEFAULT_LIGHT_PROGRAM.set_color(Color.BLACK, 600)
+DEFAULT_LIGHT_PROGRAM.append_color(Color.BLACK, 600)
 
 
 class XYZYaw:
