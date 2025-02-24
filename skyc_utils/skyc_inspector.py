@@ -195,7 +195,8 @@ def get_data(skyc_file: str) -> list[tuple[dict, dict]]:
                 light_data = data
         else:
             light_data = None
-        ret.append((traj_data, light_data))
+        if traj_data is not None or light_data is not None:
+            ret.append((traj_data, light_data))
     cleanup(files=[], folders=[folder_name])
     return ret
 
