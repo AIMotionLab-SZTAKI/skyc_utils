@@ -158,6 +158,9 @@ def get_traj_data(skyc_file: str) -> List[dict]:
     return traj_data
 
 def get_light_data(skyc_file: str) -> list[dict]:
+    """
+    TODO: docstring
+    """
     folder_name = unpack_skyc_file(skyc_file)  # unpack the skyc file (it's like a zip)
     drones_folder = os.path.join(folder_name, "drones")
     light_data = []
@@ -168,6 +171,30 @@ def get_light_data(skyc_file: str) -> list[dict]:
                 light_data.append(data)
     cleanup(files=[], folders=[folder_name])
     return light_data
+
+def get_data(skyc_file: str) -> list[tuple[dict, dict]]:
+    """
+    TODO: docstring
+    """
+    folder_name = unpack_skyc_file(skyc_file)  # unpack the skyc file (it's like a zip)
+    drones_folder = os.path.join(folder_name, "drones")  # within it, there should be a 'drones' folder for trajectories
+    ret = []
+    for root, dirs, files in os.walk(drones_folder):
+        if 'trajectory.json' in files and 'lights.json' in files:
+            with open(os.path.join(root, 'trajectory.json'), 'r') as json_file:
+                data = json.load(json_file)
+                points = data.get("points")
+                assert points is not None
+                data["has_yaw"] = True if len(points[0][1]) == 4 else False  # determine if there is a yaw trajectory
+                traj_data = data
+            with open(os.path.join(root, 'lights.json'), 'r') as json_file:
+                data = json.load(json_file)
+                light_data = data
+            ret.append((traj_data, light_data))
+    cleanup(files=[], folders=[folder_name])
+    return ret
+
+
 
 def extend_takeoff_land(traj_data: List[dict]) -> Tuple[float, float]:
     '''Function that takes the trajectories and adds a segment to their end or start, so that they start and end at

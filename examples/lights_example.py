@@ -2,7 +2,7 @@ import os
 import time
 
 from skyc_utils.skyc_maker import Trajectory, XYZYaw, Color, LightProgram, write_skyc
-from skyc_utils.skyc_inspector import get_light_data
+from skyc_utils.skyc_inspector import get_data
 
 if __name__ == '__main__':
     traj = Trajectory()
@@ -23,3 +23,6 @@ if __name__ == '__main__':
     lights.append_color(Color(120, 250, 50), 10)
 
     write_skyc([traj], [lights])
+    # f = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lights_example.skyc")
+    # data = get_data(f)
+    # print(data)
