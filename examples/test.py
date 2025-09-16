@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from trajectory import (
+from skyc_utils.trajectory import (
     Trajectory, TrajectoryType,
     Pose, Velocity, Acceleration, Jerk
 )
