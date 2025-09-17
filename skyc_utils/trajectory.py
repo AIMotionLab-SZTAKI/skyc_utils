@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Union, Optional, Sequence
 import numpy as np
 import math
+from copy import deepcopy
 
 from pkg_resources import require
 from scipy.interpolate import PPoly, BPoly, BSpline, make_splrep, make_splprep, make_interp_spline
@@ -480,6 +481,13 @@ class Trajectory:
         Args:
             ppoly (AxisPPoly): Segment(s) to append (must share the same knots across axes).
         """
+        for p in ppoly:
+            assert p.x[0] == 0, "PPoly must start at time 0!"
+            height, width = p.c.shape
+            padding = self.degree + 1 - height
+            if padding < 0:
+                raise ValueError("PPoly degree cannot be higher than the Trajectory degree! ")
+            p.c = np.vstack((np.zeros((padding, width)), p.c))
         if self.polynomial is None:
             self.polynomial = ppoly
         else:
@@ -577,3 +585,21 @@ class Trajectory:
 
         # Invalidate any cached Bezier export (if present)
         self.bezier = None
+
+    def add_bspline(self, x: BSpline, y: BSpline, z: BSpline, yaw: Optional[BSpline]=None):
+        if yaw is None:
+            yaw = deepcopy(x)
+            yaw.c = np.zeros_like(yaw.c)
+        assert (x.t == y.t).all() and (y.t == z.t).all() and (z.t == yaw.t).all(), "BSpline knots must match!"
+        assert x.k == y.k == z.k == yaw.k, "BSpline degrees must match!"
+        deg = x.k # same as y.k, z.k, yaw.k
+        ppoly = AxisPPoly(
+            x=PPoly.from_spline(x),
+            y=PPoly.from_spline(y),
+            z=PPoly.from_spline(z),
+            yaw=PPoly.from_spline(yaw),
+        )
+        for p in ppoly:
+            p.x = p.x[deg:-deg]
+            p.c = p.c[:, deg:-deg]
+        self.add_ppoly(ppoly)

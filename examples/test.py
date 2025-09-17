@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.interpolate import make_interp_spline, BSpline
 
 from skyc_utils.trajectory import (
     Trajectory, TrajectoryType,
@@ -22,7 +23,6 @@ def eval_trajectory_dense(traj: Trajectory, n: int = 1000):
         ax.append(fs.acc.x);   ay.append(fs.acc.y);   az.append(fs.acc.z);   ayaw.append(fs.acc.yaw)
         jx.append(fs.jerk.x);  jy.append(fs.jerk.y);  jz.append(fs.jerk.z);  jyaw.append(fs.jerk.yaw)
 
-    # convert to numpy arrays
     to_np = lambda lst: np.array(lst, dtype=float)
     return (
         t,
@@ -32,6 +32,50 @@ def eval_trajectory_dense(traj: Trajectory, n: int = 1000):
         (to_np(jx), to_np(jy), to_np(jz), to_np(jyaw)),
     )
 
+def add_spiral_bspline_segment(traj: Trajectory, turns: float = 2.0, seg_time: float = 6.0):
+    """
+    Construct an ascending spiral as BSplines and append via traj.add_bspline(...).
+    The spiral starts at the current end pose to avoid discontinuities.
+    """
+    # Current end pose/time
+    _, end_fs = traj.end_conditions
+    x0, y0, z0, yaw0 = end_fs.pose.x, end_fs.pose.y, end_fs.pose.z, end_fs.pose.yaw
+
+    # Build param samples for the spiral (Archimedean-style in XY, linear in Z)
+    n_ctrl = 60  # number of interpolation points to build the BSpline
+    t = np.linspace(0, seg_time, n_ctrl)
+
+    theta = np.linspace(0.0, 2.0 * np.pi * turns, n_ctrl)
+    r_start, r_end = 0.05, 0.7
+    r = np.linspace(r_start, r_end, n_ctrl)
+
+    # Base spiral around (0,0); we will shift to (x0, y0)
+    x = r * np.cos(theta)
+    y = r * np.sin(theta)
+    z = np.linspace(0.0, 0.6, n_ctrl)  # ascend 0.6 m (adjust as you like)
+
+    # Shift so that the spiral starts exactly at the current end pose
+    x += (x0 - x[0])
+    y += (y0 - y[0])
+    z += (z0 - z[0])
+
+    # Approximate tangent-based yaw from finite differences, unwrap for continuity
+    dx = np.gradient(x, t)
+    dy = np.gradient(y, t)
+    yaw = np.unwrap(np.arctan2(dy, dx))
+
+    # Optionally align initial yaw to the current yaw (smallest adjustment)
+    yaw += (yaw0 - yaw[0])
+
+    # Create cubic BSplines for each axis (domain is [t_start, t_end])
+    x_bs: BSpline = make_interp_spline(t, x, k=3)
+    y_bs: BSpline = make_interp_spline(t, y, k=3)
+    z_bs: BSpline = make_interp_spline(t, z, k=3)
+    yaw_bs: BSpline = make_interp_spline(t, yaw, k=3)
+
+    # Append via the new method you'll implement
+    traj.add_bspline(x_bs, y_bs, z_bs, yaw_bs)
+
 def main():
     # Build a trajectory (degree 7 to allow up to jerk constraints)
     traj = Trajectory(TrajectoryType.POLY4D, degree=7, start=Pose(0.0, 0.0, 0.0, 0.0))
@@ -39,7 +83,7 @@ def main():
     # 1) Position-only goto
     traj.add_goto(Pose(1.0, 0.0, 0.8, 0.0), dt=2.0)
 
-    # 2) Arrive with zero velocity
+    # 2) Arrive with some velocity
     traj.add_goto(Pose(1.5, 0.5, 1.0, 0.5), dt=1.5, end_vel=Velocity(0.5, 0.5, 0.5, 0.0))
 
     # 3) Match pos + vel + acc (acc zeros)
@@ -47,7 +91,7 @@ def main():
         Pose(1.0, 1.0, 1.0, 1.0),
         dt=1.0,
         end_vel=Velocity(0.2, 0.0, 0.0, 0.0),
-        end_acc=Acceleration(1.0, 0.0, 0.0, 0.0),
+        end_acc=Acceleration(0.0, 0.0, 0.0, 0.0),
     )
 
     # 4) Match up to jerk (all zeros on arrival)
@@ -58,6 +102,9 @@ def main():
         end_acc=Acceleration(0.0, 0.0, 0.0, 0.0),
         end_jerk=Jerk(0.0, 0.0, 0.0, 0.0),
     )
+
+    # 5) Append a smooth ascending spiral via BSpline
+    add_spiral_bspline_segment(traj, turns=2.5, seg_time=6.0)
 
     # Evaluate densely
     t, pose, vel, acc, jerk = eval_trajectory_dense(traj, n=2000)
@@ -74,7 +121,7 @@ def main():
 
     # Plot
     fig, axs = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
-    fig.suptitle("Trajectory debug: pose / vel / acc / jerk")
+    fig.suptitle("Trajectory debug: pose / vel / acc / jerk (with BSpline spiral)")
 
     # Pose
     axs[0].plot(t, x, label='x [m]')
@@ -84,7 +131,6 @@ def main():
     ax0b.plot(t, yaw_deg, linestyle='--', alpha=0.7, label='yaw [deg]')
     axs[0].set_ylabel("pose")
     axs[0].grid(True)
-    # combine legends
     lines1, labels1 = axs[0].get_legend_handles_labels()
     lines2, labels2 = ax0b.get_legend_handles_labels()
     axs[0].legend(lines1 + lines2, labels1 + labels2, loc='upper right')
