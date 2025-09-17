@@ -78,35 +78,8 @@ def add_spiral_bspline_segment(traj: Trajectory, turns: float = 2.0, seg_time: f
     traj.add_bspline(x_bs, y_bs, z_bs, yaw_bs)
 
 def main():
-    # Build a trajectory (degree 7 to allow up to jerk constraints)
-    traj = Trajectory(TrajectoryType.POLY4D, degree=7, start=Pose(0.0, 0.0, 0.0, 0.0))
 
-    # 1) Position-only goto
-    traj.add_goto(Pose(1.0, 0.0, 0.8, 0.0), dt=2.0)
-
-    # 2) Arrive with some velocity
-    traj.add_goto(Pose(1.5, 0.5, 1.0, 0.5), dt=1.5, end_vel=Velocity(0.5, 0.5, 0.5, 0.0))
-
-    # 3) Match pos + vel + acc (acc zeros)
-    traj.add_goto(
-        Pose(1.0, 1.0, 1.0, 1.0),
-        dt=1.0,
-        end_vel=Velocity(0.2, 0.0, 0.0, 0.0),
-        end_acc=Acceleration(0.0, 0.0, 0.0, 0.0),
-    )
-
-    # 4) Match up to jerk (all zeros on arrival)
-    traj.add_goto(
-        Pose(0.2, 0.2, 0.8, 0.2),
-        dt=2.0,
-        end_vel=Velocity(0.0, 0.0, 0.0, 0.0),
-        end_acc=Acceleration(0.0, 0.0, 0.0, 0.0),
-        end_jerk=Jerk(0.0, 0.0, 0.0, 0.0),
-    )
-
-    # 5) Append a smooth ascending spiral via BSpline
-    add_spiral_bspline_segment(traj, turns=2.5, seg_time=6.0)
-
+    traj = Trajectory.from_json("trajectory.json")
     # Evaluate densely
     t, pose, vel, acc, jerk = eval_trajectory_dense(traj, n=2000)
     x, y, z, yaw = pose
@@ -179,12 +152,6 @@ def main():
         for axp in axs:
             for k in knots:
                 axp.axvline(k, color='k', alpha=0.15, linewidth=1)
-
-    traj.export_json(True)
-
-#    skyc = Skyc()
-#    skyc.add_drone(traj)
-#    skyc.write()
 
     plt.tight_layout()
     plt.show()

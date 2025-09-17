@@ -428,7 +428,7 @@ class Trajectory:
         # All axes share the same breakpoints by construction
         return float(self.polynomial.x.x[-1])
 
-    def eval_fullstate(self, t: float) -> FullState:
+    def evaluate(self, t: float) -> FullState:
         """
         Evaluate pose, velocity, acceleration, and jerk at time ``t``.
 
@@ -442,8 +442,10 @@ class Trajectory:
            If the trajectory is empty, this returns the ``start`` pose with zeros
            for all derivatives.
         """
-        if self.polynomial is None:
+        if self.polynomial is None or t < self.polynomial.x.x[0]:
             return FullState(pose=self.start)
+        if t > self.polynomial.x.x[-1]:
+            return self.evaluate(self.duration)
 
         px  = float(self.polynomial.x(t, nu=0)); py  = float(self.polynomial.y(t, nu=0))
         pz  = float(self.polynomial.z(t, nu=0)); pyw = float(self.polynomial.yaw(t, nu=0))
@@ -476,7 +478,7 @@ class Trajectory:
         """
         t0 = float(self.polynomial.x.x[0]) if self.polynomial is not None else 0
         t1 = float(self.polynomial.x.x[-1]) if self.polynomial is not None else 0
-        return self.eval_fullstate(t0), self.eval_fullstate(t1)
+        return self.evaluate(t0), self.evaluate(t1)
 
     def add_ppoly(self, ppoly: AxisPPoly):
         """
@@ -656,4 +658,99 @@ class Trajectory:
             with open("trajectory.json", "w") as f:
                 f.write(json_object)
         return json_object
+
+    @staticmethod
+    def from_json(file: str) -> 'Trajectory':
+        """
+        Reconstruct a Trajectory from a JSON file produced by export_json().
+
+        The file must contain:
+          {
+            "version": 1,
+            "points": [
+              [t0, [x0,y0,z0,yaw0], []],                          # start pose
+              [t1, [x1,y1,z1,yaw1], [[...],[...], ...]],          # seg 1: end + inner control points
+              [t2, [x2,y2,z2,yaw2], [[...],[...], ...]],          # seg 2
+              ...
+            ],
+            "type": "POLY4D" | "COMPRESSED",
+            "takeoffTime": t0,
+            "landingTime": tN
+          }
+
+        Returns:
+            Trajectory: fully-populated Trajectory with PPoly representation.
+        """
+
+
+        with open(file, "r") as f:
+            data = json.load(f)
+
+        pts = data["points"]
+        if not pts:
+            raise ValueError("JSON has no points.")
+
+        # Start pose (first row)
+        t0, start_xyzw, _ = pts[0]
+        start = Pose(*map(float, start_xyzw))
+
+        # If there are no segments, return an empty traj with the start pose
+        if len(pts) == 1:
+            traj_type = TrajectoryType(data.get("type", "POLY4D"))
+            return Trajectory(traj_type, degree=1, start=start)
+
+        # Degree from inner control points: inner count = degree-1
+        first_inner = pts[1][2]
+        deg = len(first_inner) + 1  # Bezier degree
+        n_ctrl = deg + 1  # control points per segment
+        m = len(pts) - 1  # number of segments
+
+        # Breakpoints (Bernstein domains): [t0, t1, ..., t_m]
+        breaks = np.array([p[0] for p in pts], dtype=float)
+
+        # Coefficients per axis in Bernstein form: shape (n_ctrl, m)
+        cx = np.zeros((n_ctrl, m), dtype=float)
+        cy = np.zeros((n_ctrl, m), dtype=float)
+        cz = np.zeros((n_ctrl, m), dtype=float)
+        cyaw = np.zeros((n_ctrl, m), dtype=float)
+
+        for j in range(m):
+            # Segment j runs from pts[j] -> pts[j+1]
+            _, start_pt, _ = pts[j]
+            _, end_pt, inner = pts[j + 1]
+
+            # Validate consistent degree
+            if len(inner) != deg - 1:
+                raise ValueError("Inconsistent degree across segments in JSON.")
+
+            # Full control point list for this segment: [P0] + inner + [Pn]
+            # Each point is [x, y, z, yaw]
+            ctrl = np.vstack([
+                np.asarray(start_pt, dtype=float),
+                np.asarray(inner, dtype=float),
+                np.asarray(end_pt, dtype=float)
+            ])  # shape: (n_ctrl, 4)
+
+            cx[:, j] = ctrl[:, 0]
+            cy[:, j] = ctrl[:, 1]
+            cz[:, j] = ctrl[:, 2]
+            cyaw[:, j] = ctrl[:, 3]
+
+        # Build Bernstein polynomials and convert to power basis (PPoly)
+        bpx = BPoly(cx, breaks)
+        bpy = BPoly(cy, breaks)
+        bpz = BPoly(cz, breaks)
+        bpyaw = BPoly(cyaw, breaks)
+
+        ppx = PPoly.from_bernstein_basis(bpx)
+        ppy = PPoly.from_bernstein_basis(bpy)
+        ppz = PPoly.from_bernstein_basis(bpz)
+        ppyaw = PPoly.from_bernstein_basis(bpyaw)
+
+        traj_type = TrajectoryType(data.get("type", "POLY4D"))
+        traj = Trajectory(traj_type, degree=deg, start=start)
+        traj.polynomial = AxisPPoly(ppx, ppy, ppz, ppyaw)
+        traj.bezier = None  # ensure any old cache is cleared
+        return traj
+
 
