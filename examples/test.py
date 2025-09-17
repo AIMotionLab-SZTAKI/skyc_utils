@@ -7,6 +7,7 @@ from skyc_utils.trajectory import (
     Pose, Velocity, Acceleration, Jerk
 )
 from skyc_utils.skyc import Skyc
+from skyc_utils.light_program import LightProgram, Color
 
 def eval_trajectory_dense(traj: Trajectory, n: int = 1000):
     T = traj.duration
@@ -182,9 +183,19 @@ def main():
 
     traj.export_json(True)
 
-#    skyc = Skyc()
-#    skyc.add_drone(traj)
-#    skyc.write()
+    traj.add_parameter(2.0, "paramName", 1)
+
+    lights = LightProgram()
+    lights.append_color(Color.WHITE, 3)
+    lights.append_color(Color(100, 200, 255), 2)
+    lights.append_color(Color.MAGENTA, 1.5)
+    lights.append_color(Color.RED, 2.5)
+    lights.append_color(Color.YELLOW, 4)
+    lights.append_color(Color(120, 250, 50), 10)
+
+    skyc = Skyc()
+    skyc.add_drone(traj, lights)
+    skyc.write()
 
     plt.tight_layout()
     plt.show()

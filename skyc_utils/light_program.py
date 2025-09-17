@@ -1,6 +1,7 @@
 from pyledctrl.compiler.compiler import BytecodeCompiler
 from pyledctrl.compiler.formats import InputFormat
 from pyledctrl.compiler.formats import OutputFormat
+from pyledctrl.parsers.bytecode import BytecodeParser
 from typing import ClassVar, Union
 import json
 
@@ -64,9 +65,16 @@ class LightProgram:
         json_dict["colors"] = self.colors
         json_object = json.dumps(json_dict, indent=2)
         if write_file:
-            with open("trajectory.json", "w") as f:
+            with open("lights.json", "w") as f:
                 f.write(json_object)
         return json_object
+
+    @staticmethod
+    def from_json(file: str) -> 'LightProgram':
+        with open(file, "r") as f:
+            data = json.load(f)
+        return DEFAULT_LIGHT_PROGRAM # not implemented yet
+
 
 DEFAULT_LIGHT_PROGRAM = LightProgram()
 DEFAULT_LIGHT_PROGRAM.append_color(Color.BLACK, 600)

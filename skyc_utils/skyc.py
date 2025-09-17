@@ -6,6 +6,7 @@ from typing import Union, Optional
 import json
 import sys
 import zipfile
+import tempfile
 
 def is_num(var):
     """There has to be a built-in for this...."""
@@ -25,21 +26,19 @@ def cleanup(files: list[str], folders: list[str]):
             print(f"Deleted {folder} folder")
 
 class Skyc:
-    def __init__(self, lights: bool = False):
-        self.has_lights = lights
+    def __init__(self):
+        self.has_lights = False
         self.drones: list[Union[tuple[Trajectory], tuple[Trajectory, LightProgram]]] = []
 
     def add_drone(self, traj: Trajectory, light_program: Optional[LightProgram] = None) -> None:
+        if len(self.drones) == 0:
+            self.has_lights = light_program is not None
         if self.has_lights:
             assert(light_program is not None), "Light Program required for Skyc file with has_lights=True!"
             self.drones.append((traj, light_program))
         else:
             assert(light_program is None), "Light Program not allowed for Skyc file with has_lights=False!"
             self.drones.append((traj,))
-
-    @staticmethod
-    def from_file(file: str) -> 'Skyc':
-        pass
 
     def write(self, name: str = sys.argv[0][:-3]) -> None:
         cleanup(files=["show.json",
@@ -149,3 +148,79 @@ class Skyc:
                        "lights.json"],
                 folders=["drones"])
         print(f"{name}.skyc ready!")
+
+    @staticmethod
+    def from_file(file: str) -> 'Skyc':
+        def _read_json_from_zip(zf: zipfile.ZipFile, inner_path: str) -> tuple[str, dict]:
+            # inner_path may be like "./drones/drone_0/trajectory.json#"
+            path = inner_path.split('#', 1)[0].lstrip('./')
+            try:
+                raw = zf.read(path)
+            except KeyError as e:
+                raise FileNotFoundError(f"Missing file in archive: {path}") from e
+            return path, json.loads(raw.decode('utf-8'))
+
+        with zipfile.ZipFile(file, 'r') as zf:
+            # --- show.json ---
+            try:
+                show_raw = zf.read('show.json')
+            except KeyError as e:
+                raise FileNotFoundError("show.json not found in the skyc archive") from e
+            show = json.loads(show_raw.decode('utf-8'))
+
+            drones_meta = show.get('swarm', {}).get('drones', [])
+            if not isinstance(drones_meta, list) or not drones_meta:
+                raise ValueError("show.json has no swarm/drones entries.")
+
+            has_lights = any('lights' in d.get('settings', {}) for d in drones_meta)
+            skyc = Skyc()
+
+            # Rebuild each drone
+            for d in drones_meta:
+                settings = d.get('settings', {})
+                traj_ref = settings.get('trajectory', {}).get('$ref')
+                if not traj_ref:
+                    raise ValueError("A drone in show.json is missing its trajectory $ref.")
+
+                # Read trajectory.json blob -> temp file -> Trajectory.from_json(path)
+                traj_path_in_zip, traj_json = _read_json_from_zip(zf, traj_ref)
+                with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as tmp:
+                    tmp.write(json.dumps(traj_json).encode('utf-8'))
+                    traj_tmp_path = tmp.name
+                try:
+                    traj = Trajectory.from_json(traj_tmp_path)
+                finally:
+                    os.remove(traj_tmp_path)
+
+                # Copy parameters from show.json into the trajectory, if present
+                params = settings.get('parameters', [])
+                if params:
+                    if not isinstance(params, list):
+                        raise ValueError("'parameters' must be a list.")
+                    for entry in params:
+                        if (not isinstance(entry, (list, tuple))) or len(entry) != 3:
+                            raise ValueError("Each parameter must be [time, name, value].")
+                        t, pname, val = entry
+                        if not (is_num(t) and isinstance(pname, str) and is_num(val)):
+                            raise ValueError("Parameter entry types must be [number, str, number].")
+                        traj.add_parameter(float(t), pname, float(val))
+
+                # Optional lights
+                if has_lights:
+                    lights_ref = settings.get('lights', {}).get('$ref')
+                    if not lights_ref:
+                        raise ValueError("Skyc has lights=True but a drone is missing lights.json $ref.")
+                    _, lights_json = _read_json_from_zip(zf, lights_ref)
+                    with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as tmp:
+                        tmp.write(json.dumps(lights_json).encode('utf-8'))
+                        lights_tmp_path = tmp.name
+                    try:
+                        light_prog = LightProgram.from_json(lights_tmp_path)
+                    finally:
+                        os.remove(lights_tmp_path)
+
+                    skyc.add_drone(traj, light_prog)
+                else:
+                    skyc.add_drone(traj)
+
+        return skyc
