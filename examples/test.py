@@ -179,6 +179,8 @@ def main():
             for k in knots:
                 axp.axvline(k, color='k', alpha=0.15, linewidth=1)
 
+    traj.export_json(True)
+
     plt.tight_layout()
     plt.show()
 

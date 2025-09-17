@@ -6,6 +6,7 @@ from typing import Union, Optional, Sequence
 import numpy as np
 import math
 from copy import deepcopy
+import json
 
 from pkg_resources import require
 from scipy.interpolate import PPoly, BPoly, BSpline, make_splrep, make_splprep, make_interp_spline
@@ -494,6 +495,8 @@ class Trajectory:
             for existing_ppoly, new_ppoly in zip(self.polynomial, ppoly):
                 existing_ppoly.x = np.hstack((existing_ppoly.x, new_ppoly.x[1:] + existing_ppoly.x[-1]))
                 existing_ppoly.c = np.hstack((existing_ppoly.c, new_ppoly.c))
+        # Invalidate any cached Bezier export (if present)
+        self.bezier = None
 
     def add_goto(
         self,
@@ -583,9 +586,6 @@ class Trajectory:
         )
         self.add_ppoly(new_segment)
 
-        # Invalidate any cached Bezier export (if present)
-        self.bezier = None
-
     def add_bspline(self, x: BSpline, y: BSpline, z: BSpline, yaw: Optional[BSpline]=None):
         if yaw is None:
             yaw = deepcopy(x)
@@ -603,3 +603,50 @@ class Trajectory:
             p.x = p.x[deg:-deg]
             p.c = p.c[:, deg:-deg]
         self.add_ppoly(ppoly)
+
+    def set_bezier_repr(self):
+        """
+        Constructs the bezier representation of the curve, in a state that's ready to be immediately written to a
+        json object in a skyc file: a list, where each element is:
+        [-a timestamp (arrive at this time!)
+        -a point (arrive to this point at that time!)
+        -a potentially empty list of auxiliary points, which are the inner points of each Bezier curve]
+        This way, each element in the list corresponds to a Bezier curve, the first point of which is the arrival
+        point of the last segment, the middle points are the auxiliary points, and the last point is the arrival
+        point of the current segment.
+        """
+        assert self.polynomial is not None
+        bezier_repr = [[0.0, [self.start.x, self.start.y, self.start.z, self.start.yaw], []]]
+        bpolys = [BPoly.from_power_basis(ppoly) for ppoly in self.polynomial]
+        # These two lines below seem complicated but all they do is pack the data above into a convenient form: a list
+        # of lists where each element looks like this: [t, (x,y,z), (x,y,z), (x,y,z)].
+        bpoly_pts = list(zip(list(bpolys[0].x)[1:], *[list(bpoly.c.transpose()) for bpoly in bpolys]))
+        # at this point bpoly_pts contains the control points for the segments, but that's not exactly what we need in
+        # the skyc file: we need the last point, and the inside points
+        bezier_curves = [[element[0]] + list(zip(*list(element[1:]))) for element in bpoly_pts]
+        for bezier_curve in bezier_curves:
+            curve_to_append = [bezier_curve[0],
+                               bezier_curve[-1],
+                               bezier_curve[2:-1]]
+            bezier_repr.append(curve_to_append)
+        self.bezier_repr = bezier_repr
+
+    def export_json(self, write_file: bool = True) -> str:
+        """
+        Returns the json formatted string of the bezier representation, and also writes it to a file if we wish.
+        """
+        self.set_bezier_repr()
+        # this is the format that a TrajectorySpecification requires:
+        json_dict = {
+            "version": 1,
+            "points": self.bezier_repr,
+            "takeoffTime": self.bezier_repr[0][0],
+            "landingTime": self.bezier_repr[-1][0],
+            "type": self.type.value
+        }
+        json_object = json.dumps(json_dict, indent=2)
+        if write_file:
+            with open("trajectory.json", "w") as f:
+                f.write(json_object)
+        return json_object
+
