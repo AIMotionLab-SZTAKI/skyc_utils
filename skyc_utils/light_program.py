@@ -53,7 +53,7 @@ class LightProgram:
         self.source = self.source + bytes(f"set_color({color}, duration={duration})\n", "utf-8")
         self.colors.append([color.__repr__(), duration])
 
-    def export_json(self):
+    def export_json(self, write_file: bool = True) -> str:
         """
         Write the light program to a json file.
         """
@@ -63,10 +63,10 @@ class LightProgram:
         json_dict = json.loads(output.decode('ascii'))
         json_dict["colors"] = self.colors
         json_object = json.dumps(json_dict, indent=2)
-        with open("lights.json", "w") as f:
-            f.write(json_object)
-
-
+        if write_file:
+            with open("trajectory.json", "w") as f:
+                f.write(json_object)
+        return json_object
 
 DEFAULT_LIGHT_PROGRAM = LightProgram()
 DEFAULT_LIGHT_PROGRAM.append_color(Color.BLACK, 600)

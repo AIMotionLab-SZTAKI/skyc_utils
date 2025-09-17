@@ -395,9 +395,16 @@ class Trajectory:
         # Cached Bezier representation (built on demand by to_bezier/export_json)
         self.bezier: Optional[list] = None
 
+        self.parameters = []
+
     # -----------------------------------------------------------------------
     # Public API
     # -----------------------------------------------------------------------
+
+    def add_parameter(self, t: Union[int, float], param: str, value: Union[int, float]):
+        """Using this function instead of directly setting trajectory.parameters ensures that we don't mess up by
+        writing the parameters in traj.parameters in the wrong order (such as parameter, value, time)."""
+        self.parameters.append([t, param, value])
 
     def is_empty(self) -> bool:
         """
@@ -604,7 +611,7 @@ class Trajectory:
             p.c = p.c[:, deg:-deg]
         self.add_ppoly(ppoly)
 
-    def set_bezier_repr(self):
+    def set_bezier(self):
         """
         Constructs the bezier representation of the curve, in a state that's ready to be immediately written to a
         json object in a skyc file: a list, where each element is:
@@ -616,7 +623,7 @@ class Trajectory:
         point of the current segment.
         """
         assert self.polynomial is not None
-        bezier_repr = [[0.0, [self.start.x, self.start.y, self.start.z, self.start.yaw], []]]
+        bezier = [[0.0, [self.start.x, self.start.y, self.start.z, self.start.yaw], []]]
         bpolys = [BPoly.from_power_basis(ppoly) for ppoly in self.polynomial]
         # These two lines below seem complicated but all they do is pack the data above into a convenient form: a list
         # of lists where each element looks like this: [t, (x,y,z), (x,y,z), (x,y,z)].
@@ -628,20 +635,20 @@ class Trajectory:
             curve_to_append = [bezier_curve[0],
                                bezier_curve[-1],
                                bezier_curve[2:-1]]
-            bezier_repr.append(curve_to_append)
-        self.bezier_repr = bezier_repr
+            bezier.append(curve_to_append)
+        self.bezier = bezier
 
     def export_json(self, write_file: bool = True) -> str:
         """
         Returns the json formatted string of the bezier representation, and also writes it to a file if we wish.
         """
-        self.set_bezier_repr()
+        self.set_bezier()
         # this is the format that a TrajectorySpecification requires:
         json_dict = {
             "version": 1,
-            "points": self.bezier_repr,
-            "takeoffTime": self.bezier_repr[0][0],
-            "landingTime": self.bezier_repr[-1][0],
+            "points": self.bezier,
+            "takeoffTime": self.bezier[0][0],
+            "landingTime": self.bezier[-1][0],
             "type": self.type.value
         }
         json_object = json.dumps(json_dict, indent=2)

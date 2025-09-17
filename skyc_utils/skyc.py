@@ -1,5 +1,5 @@
-from trajectory import Trajectory
-from light_program import LightProgram
+from skyc_utils.trajectory import Trajectory
+from skyc_utils.light_program import LightProgram
 import os
 import shutil
 from typing import Union, Optional
@@ -26,19 +26,22 @@ def cleanup(files: list[str], folders: list[str]):
 
 class Skyc:
     def __init__(self, lights: bool = False):
-        self.lights = lights
+        self.has_lights = lights
+        self.drones: list[Union[tuple[Trajectory], tuple[Trajectory, LightProgram]]] = []
 
     def add_drone(self, traj: Trajectory, light_program: Optional[LightProgram] = None) -> None:
-        if self.lights:
-            assert(light_program is not None), "Light Program required for Skyc file with lights=True!"
+        if self.has_lights:
+            assert(light_program is not None), "Light Program required for Skyc file with has_lights=True!"
+            self.drones.append((traj, light_program))
         else:
-            assert(light_program is None), "Light Program not allowed for Skyc file with lights=False!"
+            assert(light_program is None), "Light Program not allowed for Skyc file with has_lights=False!"
+            self.drones.append((traj,))
 
-    def write_skyc(trajectories: list[Trajectory], light_programs: Optional[list[LightProgram]] = None,
-                   name=sys.argv[0][:-3]):
-        """
-        Constructs a skyc file from the provided trajectory, and optionally given lights with the given name.
-        """
+    @staticmethod
+    def from_file(file: str) -> 'Skyc':
+        pass
+
+    def write(self, name: str = sys.argv[0][:-3]) -> None:
         cleanup(files=["show.json",
                        "cues.json",
                        f"{name}.zip",
@@ -46,27 +49,20 @@ class Skyc:
                        "trajectory.json"
                        "lights.json"],
                 folders=["drones"])
-        if not (light_programs is None or len(light_programs) == len(trajectories)):
-            raise ValueError("If light programs are provided, their number must equal the number of trajectories!")
         # Create the 'drones' folder if it doesn't already exist
         os.makedirs('drones', exist_ok=True)
         drones = []
-        for index, traj in enumerate(trajectories):
-            traj.export_json()
-            if light_programs is None:  # if no light program was provided, use a default black program
-                DEFAULT_LIGHT_PROGRAM.export_json()
-            else:
-                light_programs[index].export_json()
-            assert traj.bezier_repr is not None
-            Data = traj.bezier_repr
+        for index, drone in enumerate(self.drones):
+            traj = drone[0]
+            traj.export_json(write_file=True)
+            data = traj.bezier
             parameters = traj.parameters
             # The trajectory is saved to a json file with the data below
             drone_settings = {
                 "trajectory": {"$ref": f"./drones/drone_{index}/trajectory.json#"},
-                "lights": {"$ref": f"./drones/drone_{index}/lights.json#"},
-                "home": Data[0][1][0:3],
-                "startYaw": Data[0][1][-1],
-                "landAt": Data[-1][1][0:3],
+                "home": data[0][1][0:3],
+                "startYaw": data[0][1][-1],
+                "landAt": data[-1][1][0:3],
                 "name": f"drone_{index}",
             }
             if parameters is not None and len(parameters) > 0:
@@ -77,12 +73,16 @@ class Skyc:
                 "type": "generic",
                 "settings": drone_settings
             })
-
             # Create the 'drone_x' folder if it doesn't already exist
             drone_folder = os.path.join('drones', f'drone_{index}')
             os.makedirs(drone_folder, exist_ok=True)
             shutil.move('trajectory.json', drone_folder)
-            shutil.move('lights.json', drone_folder)
+            if self.has_lights:
+                light_program = drone[1]
+                light_program.export_json()
+                drone_settings["lights"] =  {"$ref": f"./drones/drone_{index}/lights.json#"}
+                shutil.move('lights.json', drone_folder)
+
         # This wall of text below is just overhead that is required to make a skyc file.
         ########################################CUES.JSON########################################
         items = [{"time": 0.0,

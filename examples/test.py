@@ -6,6 +6,7 @@ from skyc_utils.trajectory import (
     Trajectory, TrajectoryType,
     Pose, Velocity, Acceleration, Jerk
 )
+from skyc_utils.skyc import Skyc
 
 def eval_trajectory_dense(traj: Trajectory, n: int = 1000):
     T = traj.duration
@@ -180,6 +181,10 @@ def main():
                 axp.axvline(k, color='k', alpha=0.15, linewidth=1)
 
     traj.export_json(True)
+
+    skyc = Skyc()
+    skyc.add_drone(traj)
+    skyc.write()
 
     plt.tight_layout()
     plt.show()
