@@ -7,6 +7,8 @@ import json
 import sys
 import zipfile
 import tempfile
+import numpy as np
+import matplotlib.pyplot as plt
 
 def is_num(var):
     """There has to be a built-in for this...."""
@@ -224,3 +226,88 @@ class Skyc:
                     skyc.add_drone(traj)
 
         return skyc
+
+def _eval_traj_dense(traj, n: int = 1500):
+    """Return t, (x,y,z,yaw), (vx,vy,vz,vyaw), (ax,ay,az,ayaw)."""
+    T = float(traj.duration)
+    t = np.linspace(0.0, T, n) if T > 0 else np.array([0.0], dtype=float)
+
+    px = []; py = []; pz = []; pyaw = []
+    vx = []; vy = []; vz = []; vyaw = []
+    ax = []; ay = []; az = []; ayaw = []
+
+    for ti in t:
+        fs = traj.evaluate(float(ti))
+        px.append(fs.pose.x);   py.append(fs.pose.y);   pz.append(fs.pose.z);   pyaw.append(fs.pose.yaw)
+        vx.append(fs.vel.x);    vy.append(fs.vel.y);    vz.append(fs.vel.z);    vyaw.append(fs.vel.yaw)
+        ax.append(fs.acc.x);    ay.append(fs.acc.y);    az.append(fs.acc.z);    ayaw.append(fs.acc.yaw)
+
+    to_np = lambda lst: np.array(lst, dtype=float)
+    return (
+        t,
+        (to_np(px), to_np(py), to_np(pz), to_np(pyaw)),
+        (to_np(vx), to_np(vy), to_np(vz), to_np(vyaw)),
+        (to_np(ax), to_np(ay), to_np(az), to_np(ayaw)),
+    )
+
+def plot_skyc_trajectories(skyc_path: str) -> None:
+    """
+    Load a .skyc file, reconstruct all drones' trajectories, and plot:
+      - Pose (x,y,z,yaw)
+      - Velocity (vx,vy,vz,vyaw)
+      - Acceleration (ax,ay,az,ayaw)
+    in separate windows per drone.
+    """
+    skyc = Skyc.from_file(skyc_path)
+    if not skyc.drones:
+        print("No drones found in the file.")
+        return
+
+    for i, drone in enumerate(skyc.drones):
+        traj = drone[0]
+        t, pose, vel, acc = _eval_traj_dense(traj, n=1800)
+        x, y, z, yaw = pose
+        vx, vy, vz, vyaw = vel
+        ax, ay, az, ayaw = acc
+
+        fig, axs = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
+        fig.suptitle(f"Drone {i}: Trajectory")
+
+        # Pose
+        axs[0].plot(t, x,  label="x [m]")
+        axs[0].plot(t, y,  label="y [m]")
+        axs[0].plot(t, z,  label="z [m]")
+        axs[0].plot(t, yaw, linestyle="--", alpha=0.8, label="yaw [rad]")
+        axs[0].set_ylabel("Pose")
+        axs[0].grid(True)
+        axs[0].legend(loc="upper right")
+
+        # Velocity
+        axs[1].plot(t, vx, label="vx [m/s]")
+        axs[1].plot(t, vy, label="vy [m/s]")
+        axs[1].plot(t, vz, label="vz [m/s]")
+        axs[1].plot(t, vyaw, linestyle="--", alpha=0.8, label="yaẇ [rad/s]")
+        axs[1].set_ylabel("Velocity")
+        axs[1].grid(True)
+        axs[1].legend(loc="upper right")
+
+        # Acceleration
+        axs[2].plot(t, ax, label="ax [m/s²]")
+        axs[2].plot(t, ay, label="ay [m/s²]")
+        axs[2].plot(t, az, label="az [m/s²]")
+        axs[2].plot(t, ayaw, linestyle="--", alpha=0.8, label="yaẅ [rad/s²]")
+        axs[2].set_ylabel("Acceleration")
+        axs[2].set_xlabel("time [s]")
+        axs[2].grid(True)
+        axs[2].legend(loc="upper right")
+
+        # Mark segment boundaries if available
+        if traj.polynomial is not None:
+            knots = traj.polynomial.x.x  # shared across axes by construction
+            for axp in axs:
+                for k in knots:
+                    axp.axvline(float(k), color="k", alpha=0.15, linewidth=1)
+
+        fig.tight_layout()
+
+    plt.show()
