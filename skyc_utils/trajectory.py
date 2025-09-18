@@ -306,48 +306,41 @@ def _shortest_yaw(current: float, target: float) -> float:
 
 def _solve_poly_from_boundary(derivs_start: np.ndarray, derivs_end: np.ndarray, t0: float, t1: float):
     """
-    Solve for power-basis polynomial coefficients that meet boundary derivatives.
-
-    Given derivative values at two boundaries ``t0`` and ``t1`` up to order
-    ``k-1`` (where ``k = len(derivs_start) = len(derivs_end)``), this builds
-    and solves a linear system for the coefficients ``c0 .. cN`` in **ascending**
-    powers such that all specified derivatives match at both ends.
+    Solve for power-basis coefficients with possibly DIFFERENT number of boundary
+    constraints at start vs end.
 
     Args:
-        derivs_start (numpy.ndarray): Derivatives at ``t0``; shape ``(k,)``.
-        derivs_end (numpy.ndarray): Derivatives at ``t1``; shape ``(k,)``.
-        t0 (float): Start abscissa **in the local variable used for the segment**.
-        t1 (float): End abscissa **in the same local variable**.
+        derivs_start (numpy.ndarray): [f(t0), f'(t0), ..., up to ks-1], shape (ks,)
+        derivs_end   (numpy.ndarray): [f(t1), f'(t1), ..., up to ke-1], shape (ke,)
+        t0, t1 (float): local segment times (e.g. 0, dt)
 
     Returns:
-        numpy.ndarray: Coefficients in ascending powers ``[c0, c1, ...]``.
-
-    Raises:
-        ValueError: If ``derivs_start`` and ``derivs_end`` lengths differ.
-
-    .. important::
-       This function expects **local** times for the segment (e.g., ``t ∈ [0, dt]``).
-       When constructing a :class:`PPoly`, its coefficients are expressed in the
-       local variable ``(t - x_j)`` per segment. If you solve in absolute time
-       but build a segment on ``[0, dt]``, you will get incorrect magnitudes.
+        numpy.ndarray: coefficients in ascending powers [c0, c1, ..., c_{N-1}]
+                       where N = ks + ke
     """
-    if len(derivs_start) != len(derivs_end):
-        raise ValueError("Start/end derivative lists must be of equal length.")
-    N = len(derivs_start) + len(derivs_end)
+    ks = int(len(derivs_start))
+    ke = int(len(derivs_end))
+    if ks < 0 or ke < 0:
+        raise ValueError("Invalid boundary lengths.")
+    N = ks + ke
+    if N == 0:
+        raise ValueError("No constraints provided.")
+
     A = np.zeros((N, N), dtype=float)
     b = np.concatenate((derivs_start, derivs_end))
 
-    k = len(derivs_start)
-    # rows 0..k-1: start derivatives
-    for i in range(k):                # derivative order at boundary
-        for j in range(i, N):         # coefficient index
+    # rows 0..ks-1: start derivatives at t0
+    for i in range(ks):             # derivative order
+        for j in range(i, N):       # coefficient index
             A[i, j] = (math.factorial(j) / math.factorial(j - i)) * (t0 ** (j - i))
-    # rows k..2k-1: end derivatives
-    for i in range(k):
-        for j in range(i, N):
-            A[k + i, j] = (math.factorial(j) / math.factorial(j - i)) * (t1 ** (j - i))
 
-    coeffs = np.linalg.solve(A, b)   # ascending powers: [c0, c1, ...]
+    # rows ks..ks+ke-1: end derivatives at t1
+    for i in range(ke):
+        row = ks + i
+        for j in range(i, N):
+            A[row, j] = (math.factorial(j) / math.factorial(j - i)) * (t1 ** (j - i))
+
+    coeffs = np.linalg.solve(A, b)  # ascending powers
     return coeffs
 
 
@@ -400,6 +393,21 @@ class Trajectory:
     # -----------------------------------------------------------------------
     # Public API
     # -----------------------------------------------------------------------
+
+    def create_segment(self, start: FullState, end: FullState, start_cond: int, end_cond: int, dt: float):
+        assert start_cond + end_cond <= self.degree + 1, "Cannot satisfy boundary conditions."
+        end.pose.yaw = _shortest_yaw(start.pose.yaw, end.pose.yaw)
+        start_m = start.as_matrix()[:, :start_cond]
+        end_m = end.as_matrix()[:, :end_cond]
+        coeffs = np.zeros((4, self.degree + 1))
+        for dim_idx in range(4):
+            coeffs[dim_idx, :start_cond + end_cond] = _solve_poly_from_boundary(start_m[dim_idx, :], end_m[dim_idx, :], 0.0, dt)
+        return AxisPPoly(
+            x=PPoly(np.flip(coeffs[0, : self.degree + 1].reshape(-1, 1)), np.array([0.0, dt])),
+            y=PPoly(np.flip(coeffs[1, : self.degree + 1].reshape(-1, 1)), np.array([0.0, dt])),
+            z=PPoly(np.flip(coeffs[2, : self.degree + 1].reshape(-1, 1)), np.array([0.0, dt])),
+            yaw=PPoly(np.flip(coeffs[3, : self.degree + 1].reshape(-1, 1)), np.array([0.0, dt])),
+        )
 
     def add_parameter(self, t: Union[int, float], param: str, value: Union[int, float]):
         """Using this function instead of directly setting trajectory.parameters ensures that we don't mess up by
@@ -480,7 +488,7 @@ class Trajectory:
         t1 = float(self.polynomial.x.x[-1]) if self.polynomial is not None else 0
         return self.evaluate(t0), self.evaluate(t1)
 
-    def add_ppoly(self, ppoly: AxisPPoly):
+    def append_ppoly(self, ppoly: AxisPPoly):
         """
         Append an :class:`AxisPPoly` to the trajectory.
 
@@ -507,7 +515,88 @@ class Trajectory:
         # Invalidate any cached Bezier export (if present)
         self.bezier = None
 
-    def add_goto(
+    def prepend_ppoly(self, ppoly: AxisPPoly):
+        """
+        Prepend AxisPPoly to the trajectory (mirror of add_ppoly but at the front).
+        Assumes ppoly segments start at t=0. Shifts existing knots forward by ppoly duration.
+        Updates self.start from the new segment's value at t=0 and shifts parameters.
+        """
+        # Validate & pad new piece to degree+1
+        for p in ppoly:
+            assert p.x[0] == 0, "PPoly must start at time 0!"
+            h, w = p.c.shape
+            pad = self.degree + 1 - h
+            if pad < 0:
+                raise ValueError("PPoly degree cannot be higher than the Trajectory degree!")
+            if pad > 0:
+                p.c = np.vstack((np.zeros((pad, w)), p.c))
+
+        dt = float(ppoly.x.x[-1])  # duration of the piece being prepended
+
+        if self.polynomial is None:
+            self.polynomial = ppoly
+        else:
+            for existing_ppoly, new_ppoly in zip(self.polynomial, ppoly):
+                # Shift existing forward by dt and concatenate in front
+                existing_ppoly.x = existing_ppoly.x + dt
+                existing_ppoly.c = np.hstack((new_ppoly.c, existing_ppoly.c))
+                existing_ppoly.x = np.hstack((new_ppoly.x, existing_ppoly.x[1:]))
+
+        # New global start pose = value at t=0 of the prepended piece
+        self.start = Pose(
+            float(ppoly.x(0.0, nu=0)),
+            float(ppoly.y(0.0, nu=0)),
+            float(ppoly.z(0.0, nu=0)),
+            float(ppoly.yaw(0.0, nu=0)),
+        )
+
+        # Shift time-stamped parameters forward
+        for p in self.parameters:
+            p[0] = float(p[0]) + dt
+
+        # Invalidate cached Bezier
+        self.bezier = None
+
+    def prepend_goto(
+        self,
+        start: Pose,
+        dt: float,
+        *,
+        start_vel: Optional[Velocity] = None,
+        start_acc: Optional[Acceleration] = None,
+        start_jerk: Optional[Jerk] = None,
+    ) -> None:
+        """
+        Todo: docstring
+        """
+        if not (dt > 0):
+            raise ValueError("dt must be positive")
+
+        if start_jerk is not None:
+            assert start_acc is not None and start_vel is not None, "Specify all lower order derivatives!"
+            assert self.degree == 7, "Cannot satisfy jerk constraint."
+            start_cond = 4
+        elif start_acc is not None:
+            assert start_vel is not None, "Specify all lower order derivatives!"
+            assert self.degree >= 5, "Cannot satisfy acceleration constraint."
+            start_cond = 3
+        elif start_vel is not None:
+            assert self.degree >= 3, "Cannot satisfy velocity constraint."
+            start_cond = 2
+        else:
+            start_cond = 1
+        end_cond = (self.degree + 1) // 2
+        start_state = FullState(
+            start,
+            start_vel if start_vel is not None else Velocity(),
+            start_acc if start_acc is not None else Acceleration(),
+            start_jerk if start_jerk is not None else Jerk(),
+        )
+        end_state, _ = self.end_conditions
+        new_segment = self.create_segment(start_state, end_state, start_cond, end_cond, dt)
+        self.prepend_ppoly(new_segment)
+
+    def append_goto(
         self,
         end: Pose,
         dt: float,
@@ -517,85 +606,36 @@ class Trajectory:
         end_jerk: Optional[Jerk] = None,
     ) -> None:
         """
-        Append a ``dt``-long segment that reaches ``end`` (and optional end derivatives),
-        matching the current trajectory state at the splice point.
-
-        The number of derivatives enforced **per endpoint** (continuity order) is
-        determined by which end derivatives are provided:
-
-        - Position only        → continuity ``= 1`` (pos)
-        - + velocity           → continuity ``= 2`` (pos, vel)
-        - + acceleration       → continuity ``= 3`` (pos, vel, acc)
-        - + jerk               → continuity ``= 4`` (pos, vel, acc, jerk)
-
-        Constraints are bounded by the polynomial degree: one needs
-        ``continuity ≤ floor((degree + 1) / 2)``. Any higher coefficients beyond what is
-        required are set to zero, effectively mimicking a lower-degree polynomial.
-
-        Yaw is unwrapped to follow the shortest turn from the current yaw.
-
-        Args:
-            end (Pose): Target pose at the end of the new segment.
-            dt (float): Segment duration (must be positive).
-            end_vel (Optional[Velocity]): Desired end velocity (optional).
-            end_acc (Optional[Acceleration]): Desired end acceleration (requires velocity).
-            end_jerk (Optional[Jerk]): Desired end jerk (requires acceleration and velocity).
-
-        Raises:
-            AssertionError: If a higher-order derivative is provided without its lower-order
-                prerequisites (e.g., jerk without acceleration/velocity), or if the degree
-                cannot support the requested continuity.
-            ValueError: If ``dt`` is not positive.
-
-        .. important::
-           The boundary problem is solved in **local time** over ``[0, dt]`` and then
-           appended to the global piecewise representation (which shifts the knots).
+        Todo: docstring
         """
         if not (dt > 0):
             raise ValueError("dt must be positive")
 
         if end_jerk is not None:
             assert end_acc is not None and end_vel is not None, "Specify all lower order derivatives!"
-            continuity = 4
+            assert self.degree == 7, "Cannot satisfy jerk constraint."
+            end_cond = 4
         elif end_acc is not None:
             assert end_vel is not None, "Specify all lower order derivatives!"
-            continuity = 3
+            assert self.degree >= 5, "Cannot satisfy acceleration constraint."
+            end_cond = 3
         elif end_vel is not None:
-            continuity = 2
+            assert self.degree >= 3, "Cannot satisfy velocity constraint."
+            end_cond = 2
         else:
-            continuity = 1
-
-        assert (self.degree + 1) // 2 >= continuity, "Trajectory degree too low for the required continuity!"
-
-        # Build end state (fill unspecified orders with zeros)
-        _, cur = self.end_conditions
+            end_cond = 1
+        start_cond = (self.degree + 1) // 2
         end_state = FullState(
             end,
             end_vel if end_vel is not None else Velocity(),
             end_acc if end_acc is not None else Acceleration(),
             end_jerk if end_jerk is not None else Jerk(),
         )
-        end_state.pose.yaw = _shortest_yaw(cur.pose.yaw, end.yaw)
+        _, start_state = self.end_conditions
+        new_segment = self.create_segment(start_state, end_state, start_cond, end_cond, dt)
+        self.append_ppoly(new_segment)
 
-        # Solve per axis in local time [0, dt]
-        cur_M = cur.as_matrix()
-        end_M = end_state.as_matrix()
-        coeffs = np.zeros((4, self.degree + 1))
-
-        for dim_idx in range(4):
-            derivs_start = cur_M[dim_idx, :continuity]
-            derivs_end   = end_M[dim_idx, :continuity]
-            coeffs[dim_idx, : 2 * continuity] = _solve_poly_from_boundary(derivs_start, derivs_end, 0.0, dt)
-
-        new_segment = AxisPPoly(
-            x=PPoly(np.flip(coeffs[0, : self.degree + 1].reshape(-1, 1)), np.array([0.0, dt])),
-            y=PPoly(np.flip(coeffs[1, : self.degree + 1].reshape(-1, 1)), np.array([0.0, dt])),
-            z=PPoly(np.flip(coeffs[2, : self.degree + 1].reshape(-1, 1)), np.array([0.0, dt])),
-            yaw=PPoly(np.flip(coeffs[3, : self.degree + 1].reshape(-1, 1)), np.array([0.0, dt])),
-        )
-        self.add_ppoly(new_segment)
-
-    def add_bspline(self, x: BSpline, y: BSpline, z: BSpline, yaw: Optional[BSpline]=None):
+    def append_bspline(self, x: BSpline, y: BSpline, z: BSpline, yaw: Optional[BSpline]=None):
         if yaw is None:
             yaw = deepcopy(x)
             yaw.c = np.zeros_like(yaw.c)
@@ -611,7 +651,7 @@ class Trajectory:
         for p in ppoly:
             p.x = p.x[deg:-deg]
             p.c = p.c[:, deg:-deg]
-        self.add_ppoly(ppoly)
+        self.append_ppoly(ppoly)
 
     def set_bezier(self):
         """

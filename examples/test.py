@@ -76,20 +76,20 @@ def add_spiral_bspline_segment(traj: Trajectory, turns: float = 2.0, seg_time: f
     yaw_bs: BSpline = make_interp_spline(t, yaw, k=3)
 
     # Append via the new method you'll implement
-    traj.add_bspline(x_bs, y_bs, z_bs, yaw_bs)
+    traj.append_bspline(x_bs, y_bs, z_bs, yaw_bs)
 
 def main():
     # Build a trajectory (degree 7 to allow up to jerk constraints)
     traj = Trajectory(TrajectoryType.POLY4D, degree=7, start=Pose(0.0, 0.0, 0.0, 0.0))
 
     # 1) Position-only goto
-    traj.add_goto(Pose(1.0, 0.0, 0.8, 0.0), dt=2.0)
+    traj.append_goto(Pose(1.0, 0.0, 0.8, 0.0), dt=2.0)
 
     # 2) Arrive with some velocity
-    traj.add_goto(Pose(1.5, 0.5, 1.0, 0.5), dt=1.5, end_vel=Velocity(0.5, 0.5, 0.5, 0.0))
+    traj.append_goto(Pose(1.5, 0.5, 1.0, 0.5), dt=1.5, end_vel=Velocity(0.5, 0.5, 0.5, 0.0))
 
     # 3) Match pos + vel + acc (acc zeros)
-    traj.add_goto(
+    traj.append_goto(
         Pose(1.0, 1.0, 1.0, 1.0),
         dt=1.0,
         end_vel=Velocity(0.2, 0.0, 0.0, 0.0),
@@ -97,7 +97,7 @@ def main():
     )
 
     # 4) Match up to jerk (all zeros on arrival)
-    traj.add_goto(
+    traj.append_goto(
         Pose(0.2, 0.2, 0.8, 0.2),
         dt=2.0,
         end_vel=Velocity(0.0, 0.0, 0.0, 0.0),

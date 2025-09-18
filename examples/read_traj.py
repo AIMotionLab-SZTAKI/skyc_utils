@@ -75,7 +75,7 @@ def add_spiral_bspline_segment(traj: Trajectory, turns: float = 2.0, seg_time: f
     yaw_bs: BSpline = make_interp_spline(t, yaw, k=3)
 
     # Append via the new method you'll implement
-    traj.add_bspline(x_bs, y_bs, z_bs, yaw_bs)
+    traj.append_bspline(x_bs, y_bs, z_bs, yaw_bs)
 
 def main():
 
