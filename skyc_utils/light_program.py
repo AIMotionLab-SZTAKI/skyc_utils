@@ -71,9 +71,13 @@ class LightProgram:
 
     @staticmethod
     def from_json(file: str) -> 'LightProgram':
+        lights = LightProgram()
         with open(file, "r") as f:
             data = json.load(f)
-        return DEFAULT_LIGHT_PROGRAM # not implemented yet
+        for color, duration in data["colors"]:
+            rgb = list(map(int, color.split(",")))
+            lights.append_color(Color(*rgb), duration)
+        return lights
 
 
 DEFAULT_LIGHT_PROGRAM = LightProgram()
