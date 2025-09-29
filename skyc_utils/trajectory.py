@@ -665,7 +665,9 @@ class Trajectory:
         point of the current segment.
         """
         assert self.polynomial is not None
-        bezier = [[0.0, [self.start.x, self.start.y, self.start.z, self.start.yaw], []]]
+        bezier = [[0.0,
+                   [float(self.start.x), float(self.start.y), float(self.start.z), float(self.start.yaw)],
+                   []]]
         bpolys = [BPoly.from_power_basis(ppoly) for ppoly in self.polynomial]
         # These two lines below seem complicated but all they do is pack the data above into a convenient form: a list
         # of lists where each element looks like this: [t, (x,y,z), (x,y,z), (x,y,z)].
@@ -685,17 +687,10 @@ class Trajectory:
         Returns the json formatted string of the bezier representation, and also writes it to a file if we wish.
         """
         self.set_bezier()
-        def _py(o):
-            import numpy as np
-            if isinstance(o, np.ndarray): return o.tolist()
-            if isinstance(o, (np.floating,)): return float(o)
-            if isinstance(o, (np.integer,)):  return int(o)
-            if isinstance(o, (list, tuple)): return [_py(v) for v in o]
-            return o
         # this is the format that a TrajectorySpecification requires:
         json_dict = {
             "version": 1,
-            "points": _py(self.bezier),
+            "points": self.bezier,
             "takeoffTime": self.bezier[0][0],
             "landingTime": self.bezier[-1][0],
             "type": self.type.value
