@@ -685,10 +685,17 @@ class Trajectory:
         Returns the json formatted string of the bezier representation, and also writes it to a file if we wish.
         """
         self.set_bezier()
+        def _py(o):
+            import numpy as np
+            if isinstance(o, np.ndarray): return o.tolist()
+            if isinstance(o, (np.floating,)): return float(o)
+            if isinstance(o, (np.integer,)):  return int(o)
+            if isinstance(o, (list, tuple)): return [_py(v) for v in o]
+            return o
         # this is the format that a TrajectorySpecification requires:
         json_dict = {
             "version": 1,
-            "points": self.bezier,
+            "points": _py(self.bezier),
             "takeoffTime": self.bezier[0][0],
             "landingTime": self.bezier[-1][0],
             "type": self.type.value
