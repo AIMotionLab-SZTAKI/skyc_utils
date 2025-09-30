@@ -47,12 +47,13 @@ class LightProgram:
         self.source: bytes = b""
         self.colors: list[list[Union[str, float]]] = []
 
-    def append_color(self, color: Color, duration: float):
-        """
-        Append a color for a duration to the light program.
-        """
-        self.source = self.source + bytes(f"set_color({color}, duration={duration})\n", "utf-8")
-        self.colors.append([color.__repr__(), duration])
+    def append_color(self, color: Color, duration: float | None):
+        if duration is None:
+            self.source += bytes(f"set_color({color}, duration=0)\nend()\n", "utf-8")
+            self.colors.append([color.__repr__(), "∞"])
+        else:
+            self.source += bytes(f"set_color({color}, duration={duration})\n", "utf-8")
+            self.colors.append([color.__repr__(), duration])
 
     def export_json(self, write_file: bool = True) -> str:
         """
@@ -74,9 +75,7 @@ class LightProgram:
         lights = LightProgram()
         with open(file, "r") as f:
             data = json.load(f)
-        for color, duration in data["colors"]:
-            rgb = list(map(int, color.split(",")))
-            lights.append_color(Color(*rgb), duration)
+        lights.colors = data["colors"]
         return lights
 
 
