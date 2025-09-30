@@ -1,8 +1,10 @@
+from dataclasses import dataclass
+
 from pyledctrl.compiler.compiler import BytecodeCompiler
 from pyledctrl.compiler.formats import InputFormat
 from pyledctrl.compiler.formats import OutputFormat
 from pyledctrl.parsers.bytecode import BytecodeParser
-from typing import ClassVar, Union
+from typing import ClassVar, Union, Optional
 import json
 
 class Color:
@@ -28,6 +30,11 @@ class Color:
     def __repr__(self):
         return f"{self.r}, {self.g}, {self.b}"
 
+    def __eq__(self, other):
+        return self.r == other.r and self.g == other.g and self.b == other.b
+
+    def as_list(self) -> list[int]: return [self.r, self.g, self.b]
+
 Color.BLACK = Color(0, 0, 0)
 Color.RED = Color(255, 0, 0)
 Color.GREEN = Color(0, 255, 0)
@@ -37,6 +44,8 @@ Color.CYAN = Color(0, 255, 255)
 Color.MAGENTA = Color(255, 0, 255)
 Color.WHITE = Color(255, 255, 255)
 
+DEFAULT_COLOR = Color.BLACK
+
 class LightProgram:
     """
     A light program can be described in a .led file, which is basically source code from which a BytecodeCompiler
@@ -44,16 +53,25 @@ class LightProgram:
     light programs to be.
     """
     def __init__(self):
-        self.source: bytes = b""
-        self.colors: list[list[Union[str, float]]] = []
+        self.colors: list[tuple[float, Color]] = []
 
-    def append_color(self, color: Color, duration: float | None):
-        if duration is None:
-            self.source += bytes(f"set_color({color}, duration=0)\nend()\n", "utf-8")
-            self.colors.append([color.__repr__(), "∞"])
-        else:
-            self.source += bytes(f"set_color({color}, duration={duration})\n", "utf-8")
-            self.colors.append([color.__repr__(), duration])
+    def set_color(self, t: float, color: Color):
+        self.colors.append((t, color))
+        self.colors.sort(key=lambda c: c[0])
+
+    @property
+    def source(self):
+        source = ""
+        color = DEFAULT_COLOR
+        t = 0.0
+        for t_next, new_color in self.colors:
+            duration = t_next - t
+            source += f"set_color({color}, duration={duration})\n"
+            t = t_next
+            color = new_color
+        source += f"set_color({color}, duration=0)\nend()\n"
+        return bytes(source, "utf-8")
+
 
     def export_json(self, write_file: bool = True) -> str:
         """
@@ -63,21 +81,20 @@ class LightProgram:
         output = compiler.compile(input=self.source, input_format=InputFormat.LEDCTRL_SOURCE,
                                   output_format=OutputFormat.LEDCTRL_JSON)[0]
         json_dict = json.loads(output.decode('ascii'))
-        json_dict["colors"] = self.colors
+        colors_serializable = [(t, c.as_list()) for t, c in self.colors]
+        json_dict["colors"] = colors_serializable
         json_object = json.dumps(json_dict, indent=2)
         if write_file:
             with open("lights.json", "w") as f:
                 f.write(json_object)
         return json_object
 
+
     @staticmethod
     def from_json(file: str) -> 'LightProgram':
         lights = LightProgram()
         with open(file, "r") as f:
             data = json.load(f)
-        lights.colors = data["colors"]
+        colors = data["colors"]
+        lights.colors = [(t, Color(*c)) for t, c in colors]
         return lights
-
-
-DEFAULT_LIGHT_PROGRAM = LightProgram()
-DEFAULT_LIGHT_PROGRAM.append_color(Color.BLACK, 600)

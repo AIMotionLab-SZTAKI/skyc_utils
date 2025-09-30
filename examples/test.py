@@ -186,12 +186,12 @@ def main():
     traj.add_parameter(2.0, "paramName", 1)
 
     lights = LightProgram()
-    lights.append_color(Color.WHITE, 3)
-    lights.append_color(Color(100, 200, 255), 2)
-    lights.append_color(Color.MAGENTA, 1.5)
-    lights.append_color(Color.RED, 2.5)
-    lights.append_color(Color.YELLOW, 4)
-    lights.append_color(Color(120, 250, 50), 10)
+    lights.set_color(3, Color.WHITE)
+    lights.set_color(5, Color(100, 200, 255), )
+    lights.set_color(6.5, Color.MAGENTA, )
+    lights.set_color(9, Color.RED)
+    lights.set_color(13, Color.YELLOW, )
+    lights.set_color(15, Color(120, 250, 50))
 
     skyc = Skyc()
     skyc.add_drone(traj, lights)
