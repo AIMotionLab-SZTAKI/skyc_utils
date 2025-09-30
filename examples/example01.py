@@ -2,6 +2,7 @@
 import numpy as np
 from scipy.interpolate import BSpline, make_splrep
 
+from skyc_utils.light_program import LightProgram, Color
 from skyc_utils.trajectory import (
     Trajectory, TrajectoryType,
     Pose, Velocity, Acceleration, Jerk
@@ -64,11 +65,18 @@ def main():
                       end_acc=Acceleration(),
                       dt=2)
 
+    lights0 = LightProgram()
+    lights0.set_color(3, Color.WHITE)
+    lights0.set_color(6, Color.MAGENTA)
+    lights1 = LightProgram()
+    lights1.set_color(0, Color.BLUE)
+
     # Pack into a skyc (no lights/parameters)
     skyc = Skyc()
-    skyc.add_drone(traj0)
-    skyc.add_drone(traj1)
-    skyc.add_drone(traj2)
+
+    skyc.add_drone(traj0, lights0)
+    skyc.add_drone(traj1, lights1)
+    skyc.add_drone(traj2, LightProgram())
     skyc.write(name="three_drones_collisions")
 
     # Visual check (separate windows per drone; pose/vel/acc)

@@ -56,7 +56,8 @@ class LightProgram:
         self.colors: list[tuple[float, Color]] = []
 
     def set_color(self, t: float, color: Color):
-        self.colors.append((t, color))
+        rounded_t = round(t/0.02) * 0.02
+        self.colors.append((rounded_t, color))
         self.colors.sort(key=lambda c: c[0])
 
     @property
