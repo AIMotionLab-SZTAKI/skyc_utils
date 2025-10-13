@@ -394,7 +394,7 @@ class Trajectory:
     # Public API
     # -----------------------------------------------------------------------
 
-    def create_segment(self, start: FullState, end: FullState, start_cond: int, end_cond: int, dt: float):
+    def create_segment(self, start: FullState, end: FullState, start_cond: int, end_cond: int, dt: float) -> AxisPPoly:
         assert start_cond + end_cond <= self.degree + 1, "Cannot satisfy boundary conditions."
         end.pose.yaw = _shortest_yaw(start.pose.yaw, end.pose.yaw)
         start_m = start.as_matrix()[:, :start_cond]
