@@ -9,9 +9,6 @@ requires-python = ">=3.9"
 dependencies = ["matplotlib==3.8.2",
                 "numpy",
                 "scipy",
-                "trio",
-                "casadi",
-                "mosek==10.2.0",
                 "pyledctrl @ git+https://github.com/skybrush-io/pyledctrl.git"]
 description = "Repository for storing scripts, classes and functions useful for aimotionlab cf drones."
 readme = "readme.md"
