@@ -8,7 +8,6 @@ import math
 from copy import deepcopy
 import json
 
-from pkg_resources import require
 from scipy.interpolate import PPoly, BPoly, BSpline, make_splrep, make_splprep, make_interp_spline
 
 
