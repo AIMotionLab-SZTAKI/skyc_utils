@@ -8,6 +8,7 @@ from scipy.interpolate import splev, splrep, PPoly
 from scipy import interpolate as interpolate
 import numpy as np
 import math
+from .optimal_trajectory import find_optimal_poly
 import trio
 from typing import Union, List
 from trio import Event, current_time
@@ -210,15 +211,7 @@ def fit_ppoly_mosek(t_x_y_z_yaw: List[List[float]], knots, degree: int, *,
     knots: the breakpoints of the resulting piecewise polynomial
     degree: the degree of the resulting piecewise polynomial
     force_0_derivs: whether to force the start and end derivatives to be 0
-    This method relies on the optional mosek and casadi dependencies: install them with
-    pip install -e ".[mosek]"
     """
-    try:
-        # imported lazily, since optimal_trajectory pulls in the optional mosek and casadi dependencies
-        from .optimal_trajectory import find_optimal_poly
-    except ImportError as exc:
-        raise ImportError('The "mosek" fitting method requires the optional mosek and casadi dependencies. '
-                          'Install them with: pip install -e ".[mosek]"') from exc
     t, _, _, _, _ = t_x_y_z_yaw
     bspline_lst = [interpolate.splrep(t, values, k=min(degree, 5)) for values in t_x_y_z_yaw[1:]]
     x, y, z, yaw = [interpolate.splev(knots, bspline) for bspline in bspline_lst]

@@ -10,12 +10,8 @@ dependencies = ["matplotlib==3.8.2",
                 "numpy",
                 "scipy",
                 "trio",
+                "casadi",
+                "mosek==10.2.0",
                 "pyledctrl @ git+https://github.com/skybrush-io/pyledctrl.git"]
 description = "Repository for storing scripts, classes and functions useful for aimotionlab cf drones."
 readme = "readme.md"
-
-[project.optional-dependencies]
-# Needed only for the "mosek" trajectory fitting method (skyc_utils.optimal_trajectory).
-# Install with: pip install -e ".[mosek]"
-mosek = ["casadi",
-         "mosek==10.2.0"]
